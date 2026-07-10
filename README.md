@@ -109,6 +109,31 @@ Le `twitch3ds.3dsx` est produit à la racine.
 | `source/irc.c` | chat IRC (tags IRCv3, PING/PONG, reconnexion) |
 | `source/ui/` | scènes citro2d (accueil, recherche, lecture) |
 
+## Problèmes fréquents
+
+| Ce que tu vois | D'où ça vient | Quoi faire |
+|---|---|---|
+| « Erreur reseau (…) » sur l'accueil | Wi-Fi coupé ou souci réseau | Vérifier que le Wi-Fi est actif. Le code entre parenthèses aide (voir plus bas) |
+| Erreur qui parle de `SSL` / `certificate` | **Date/heure de la console fausse** → certificat TLS refusé | Régler la date dans *Paramètres de la console → Autres paramètres → Date et heure* |
+| Vidéo muette (image OK, pas de son) | `sd:/3ds/dspfirm.cdc` absent | Lancer une fois [DSP1](https://github.com/zoogie/DSP1) pour dumper le firmware du DSP |
+| Pas d'image, juste le nom + « Lecture… » | Console sans puce MVD (Old 3DS / 2DS classique), ou MVD indisponible → mode audio seul | Normal sur Old 3DS/2DS. Sur New 3DS/2DS, réessayer |
+| Ça se fige ou coupe après quelques secondes | Wi-Fi trop lent pour la qualité choisie | Passer en `160p` (`quality=160p` dans `config.ini`) |
+| Image saccadée / en retard sur le son | 480p trop lourd pour la connexion / la console | Choisir `160p` ou `360p` |
+| Chat « Connexion au chat… » puis « Déconnecté » en boucle | Le réseau bloque le port 6667 (IRC) — rare, surtout en partage de connexion mobile | Essayer un autre Wi-Fi |
+| Bouton « Lecture seule » dans le chat | Pas connecté, ou jeton expiré | **SELECT** sur l'accueil pour (re)connecter le compte |
+| « Stream terminé / hors ligne » | La chaîne n'est pas en direct | Choisir un stream réellement en live |
+| Connexion : « Code expire » | Trop de temps pour autoriser sur twitch.tv/activate | Refaire **SELECT** et autoriser plus vite |
+| Connexion : « login introuvable » | Souci réseau pendant la validation du jeton | Réessayer |
+| Mise à jour : « Echec du telechargement » | Coupure réseau pendant le téléchargement | Réessayer, ou récupérer le `.3dsx` à la main sur la page des [Releases](https://github.com/wk0t/Twitch3ds/releases) |
+| Rien ne s'affiche / texte invisible (émulateur) | Fichiers système (police) manquants | Sur vraie console c'est bon ; sur émulateur il faut fournir les fichiers système. La vidéo, elle, ne marche **pas** sur émulateur (MVD non émulé) |
+
+### Décoder le code d'« Erreur reseau (…) »
+
+- **-6 / -7** → DNS ou connexion impossible (Wi-Fi ?)
+- **-28** → délai dépassé (réseau lent)
+- **-35 / -60** → problème TLS / certificat (le plus souvent : **date de la console** à corriger)
+- **-403 / -429** → Twitch a refusé la requête (réessayer un peu plus tard)
+
 ## Limites connues
 
 - Les émotes du chat s'affichent en texte (pas d'images d'émotes).
