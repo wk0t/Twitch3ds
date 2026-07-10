@@ -1,0 +1,15 @@
+# build
+/build/
+*.3dsx
+*.elf
+*.smdh
+*.map
+*.new
+
+# sorties / brouillons
+/dist/
+/docs/
+
+# divers
+*.o
+*.d
