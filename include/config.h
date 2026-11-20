@@ -1,4 +1,4 @@
-// config.h : petit ini cle=valeur (username / oauth / quality / volume)
+// config.h: small key=value ini (username / oauth / quality / volume)
 #pragma once
 #include <3ds.h>
 

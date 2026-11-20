@@ -1,25 +1,25 @@
-// thumb.h : miniatures de streams (JPEG 320x180) chargées en tâche de fond.
+// thumb.h: stream thumbnails (JPEG 320x180) loaded in the background.
 #pragma once
 #include <citro2d.h>
 
 typedef struct {
     C3D_Tex   tex;
     C2D_Image img;
-    bool ready;      /* img utilisable */
+    bool ready;      /* img usable */
     bool failed;
-    // interne
+    // internal
     int  state;
     char url[256];
-    u16 *pixels;     /* buffer RGB565 rempli par le worker */
+    u16 *pixels;     /* RGB565 buffer filled by the worker */
     int  pw, ph;
 } Thumb;
 
 void thumb_system_init(void);
 void thumb_system_exit(void);
 
-/* lance (ou relance si l'URL a changé) le chargement async */
+/* starts (or restarts if the URL changed) the async load */
 void thumb_request(Thumb *t, const char *url);
-/* à appeler chaque frame : transforme les downloads finis en textures */
+/* call every frame: turns finished downloads into textures */
 void thumb_update(void);
-/* libère texture + buffers (main thread) */
+/* frees texture + buffers (main thread) */
 void thumb_release(Thumb *t);

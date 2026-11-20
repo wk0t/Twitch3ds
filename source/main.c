@@ -1,4 +1,4 @@
-// main.c : init des services + grosse boucle de scenes a 60fps
+// main.c: service init + main scene loop at 60 fps
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
@@ -14,7 +14,7 @@
 #include "irc.h"
 #include "update.h"
 
-/* grosse pile : curl/mbedtls tournent sur le thread principal */
+/* big stack: curl/mbedtls run on the main thread */
 u32 __stacksize__ = 0x40000;
 
 static App g_app;
@@ -78,14 +78,14 @@ int main(void)
     APT_CheckNew3DS(&n3ds);
     a->is_new3ds = n3ds;
 
-    // on prend 30% du CPU syscore pour les threads reseau/demux
+    // give 30% of the syscore CPU to the network/demux threads
     APT_SetAppCpuTimeLimit(30);
 
     a->net_ok = R_SUCCEEDED(http_global_init());
     a->audio_ok = R_SUCCEEDED(audio_init());
 
     if (a->net_ok)
-        update_start_check();   // regarde s'il y a une nouvelle version
+        update_start_check();   // check for a newer version
 
     ui_init(a);
     thumb_system_init();
@@ -96,9 +96,9 @@ int main(void)
     if (sc->enter) sc->enter(a);
 
     if (!a->net_ok)
-        app_set_status(a, "Erreur reseau : Wi-Fi actif ?");
+        app_set_status(a, "Network error: is Wi-Fi on?");
     else if (!a->is_new3ds)
-        app_set_status(a, "Old 3DS : mode audio seul (MVD absent)");
+        app_set_status(a, "Old 3DS: audio-only mode (no MVD)");
 
     while (aptMainLoop()) {
         hidScanInput();

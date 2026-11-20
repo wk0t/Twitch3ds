@@ -1,6 +1,6 @@
-// ts_demux.c : démux MPEG-TS des segments HLS Twitch (vidéo H.264 + audio AAC)
-// PAT/PMT lus dynamiquement, on ne réassemble que sur PUSI (chez Twitch une
-// section tient dans un paquet).
+// ts_demux.c: MPEG-TS demux of Twitch HLS segments (H.264 video + AAC audio)
+// PAT/PMT read dynamically; we only reassemble on PUSI (at Twitch one
+// section fits in one packet).
 
 #include <stdlib.h>
 #include <string.h>
@@ -9,12 +9,12 @@
 #include "ts_demux.h"
 
 #define TS_PKT      188
-#define TS_VBUF_CAP (512 * 1024)  // large : en 160p réel une AU fait ~50 Ko
+#define TS_VBUF_CAP (512 * 1024)  // large: at real 160p one AU is ~50 KiB
 #define TS_ABUF_CAP (64 * 1024)
 #define PTS_UNSET   ((s64)-1)
-#define PTS_QSIZE   64            // file de PTS en attente (0-1 en pratique)
+#define PTS_QSIZE   64            // pending PTS queue (0-1 in practice)
 
-// assembleur PES audio : accumule un payload et le sort entier
+// audio PES assembler: accumulates a payload and emits it whole
 typedef struct {
     u8    *buf;
     size_t cap;
@@ -35,30 +35,30 @@ static struct {
     int pid_video;
     int pid_audio;
 
-    // assembleur vidéo (découpage aux AUD)
+    // video assembler (cut at AUDs)
     u8    *vbuf;
     size_t vcap;
     size_t vlen;
-    bool   v_open;        // vbuf contient une AU débutée à un AUD
+    bool   v_open;        // vbuf holds an AU started at an AUD
     s64    v_pts;
-    int    v_zeros;       // zéros consécutifs, pour repérer un start code
-    bool   v_wait_hdr;    // start code vu, l'octet suivant = header NAL
+    int    v_zeros;       // consecutive zeros, to spot a start code
+    bool   v_wait_hdr;    // start code seen, next byte = NAL header
 
     s64    pts_q[PTS_QSIZE];
     int    pts_head, pts_tail;
 
-    // assembleur audio (par PES)
+    // audio assembler (per PES)
     PesAsm aasm;
 
     u32 err_count;
 } S = { .pid_pmt = -1, .pid_video = -1, .pid_audio = -1 };
 
-/* --- file de PTS -------------------------------------------------------- */
+/* --- PTS queue ---------------------------------------------------------- */
 
 static void pts_push(s64 pts)
 {
     int n = (S.pts_tail + 1) % PTS_QSIZE;
-    if (n == S.pts_head)             // pleine : on jette la plus ancienne
+    if (n == S.pts_head)             // full: drop the oldest
         S.pts_head = (S.pts_head + 1) % PTS_QSIZE;
     S.pts_q[S.pts_tail] = pts;
     S.pts_tail = n;
@@ -78,7 +78,7 @@ static void pts_clear(void)
     S.pts_head = S.pts_tail = 0;
 }
 
-/* --- assembleur vidéo --------------------------------------------------- */
+/* --- video assembler ---------------------------------------------------- */
 
 static void video_reset(void)
 {
@@ -96,10 +96,10 @@ static void video_emit(size_t len)
         S.vcb(S.vbuf, len, S.v_pts, S.user);
 }
 
-// Accumule le flux H.264 dans vbuf et le découpe aux AUD (NAL type 9) : à chaque
-// AUD on sort l'AU précédente et on repart au start code.
-// Obligé de faire comme ça : les PES de Twitch ne sont pas toujours alignés,
-// donc "1 PES = 1 AU" donnerait des buffers qui ne commencent pas par un start code.
+// Accumulates the H.264 stream in vbuf and cuts it at AUDs (NAL type 9): at each
+// AUD we emit the previous AU and restart at the start code.
+// We have to do it this way: Twitch PES are not always aligned, so "1 PES = 1 AU"
+// would give buffers that do not start with a start code.
 static void video_feed(const u8 *d, size_t n)
 {
     if (!S.vbuf)
@@ -108,7 +108,7 @@ static void video_feed(const u8 *d, size_t n)
     for (size_t i = 0; i < n; i++) {
         u8 b = d[i];
 
-        // débordement : on lâche l'AU en cours mais on garde la synchro
+        // overflow: drop the current AU but keep the sync
         if (S.vlen >= S.vcap) {
             S.err_count++;
             S.vlen = 0;
@@ -121,12 +121,12 @@ static void video_feed(const u8 *d, size_t n)
         if (S.v_wait_hdr) {
             S.v_wait_hdr = false;
             int nal_type = b & 0x1F;
-            if (nal_type == 9) {                 // AUD = frontière d'AU
-                // start code (00 00 01) en [vlen-4..vlen-2], header en vlen-1
+            if (nal_type == 9) {                 // AUD = AU boundary
+                // start code (00 00 01) at [vlen-4..vlen-2], header at vlen-1
                 size_t sc_pos = S.vlen - 4;
                 if (S.v_open && sc_pos > 0)
                     video_emit(sc_pos);
-                // on ramène start code + header en tête pour la nouvelle AU
+                // move start code + header back to the front for the new AU
                 memmove(S.vbuf, S.vbuf + sc_pos, S.vlen - sc_pos);
                 S.vlen -= sc_pos;
                 S.v_open = true;
@@ -145,7 +145,7 @@ static void video_feed(const u8 *d, size_t n)
     }
 }
 
-// paquet vidéo : sur PUSI on saute l'en-tête PES et on empile le PTS
+// video packet: on PUSI skip the PES header and push the PTS
 static void video_input(const u8 *p, size_t n, bool pusi)
 {
     if (!pusi) {
@@ -166,7 +166,7 @@ static void video_input(const u8 *p, size_t n, bool pusi)
         S.err_count++;
         return;
     }
-    if (p[7] & 0x80) {                            // PTS présent
+    if (p[7] & 0x80) {                            // PTS present
         s64 pts = ((s64)((p[9] >> 1) & 0x07) << 30)
                 |  ((s64)p[10] << 22)
                 |  ((s64)((p[11] >> 1) & 0x7FFF) << 15)
@@ -178,7 +178,7 @@ static void video_input(const u8 *p, size_t n, bool pusi)
         video_feed(p + off, n - off);
 }
 
-/* --- assembleur audio (par PES) ---------------------------------------- */
+/* --- audio assembler (per PES) ------------------------------------------ */
 
 static void aud_reset(PesAsm *a)
 {
@@ -242,7 +242,7 @@ static void audio_input(PesAsm *a, const u8 *p, size_t n, bool pusi)
         aud_append(a, p + off, n - off);
 }
 
-/* --- sections PSI ------------------------------------------------------ */
+/* --- PSI sections ------------------------------------------------------- */
 
 static void parse_pat(const u8 *p, size_t n)
 {
@@ -312,7 +312,7 @@ static void parse_pmt(const u8 *p, size_t n)
     if (aud >= 0 && aud != S.pid_audio) { S.pid_audio = aud; aud_reset(&S.aasm); }
 }
 
-/* --- paquet TS ---------------------------------------------------------- */
+/* --- TS packet ---------------------------------------------------------- */
 
 static void process_packet(const u8 *b)
 {
@@ -351,7 +351,7 @@ static void process_packet(const u8 *b)
     }
 }
 
-/* --- API publique ------------------------------------------------------- */
+/* --- public API --------------------------------------------------------- */
 
 void ts_demux_init(TsVideoCb vcb, TsAudioCb acb, void *user)
 {
@@ -428,7 +428,7 @@ int ts_demux_feed(const u8 *data, size_t len)
 
 void ts_demux_flush(void)
 {
-    // fin de segment : on sort l'AU vidéo et le PES audio encore ouverts
+    // end of segment: emit the video AU and the audio PES still open
     if (S.v_open && S.vlen > 0)
         video_emit(S.vlen);
     video_reset();

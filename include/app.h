@@ -1,4 +1,4 @@
-// app.h : etat global + scenes (top = video/apercus, bottom = nav/chat/tactile)
+// app.h: global state + scenes (top = video/previews, bottom = nav/chat/touch)
 #pragma once
 #include <citro2d.h>
 #include "twitch.h"
@@ -20,7 +20,7 @@
 typedef enum {
     SCENE_HOME,
     SCENE_SEARCH,
-    SCENE_PLAYER,   /* lecture + chat */
+    SCENE_PLAYER,   /* playback + chat */
     SCENE_LOGIN,    /* device flow oauth */
     SCENE_COUNT
 } SceneId;
@@ -31,35 +31,35 @@ typedef struct {
     void (*enter)(App *a);
     void (*leave)(App *a);
     void (*update)(App *a, u32 kDown, u32 kHeld, const touchPosition *touch);
-    void (*draw_top)(App *a);     // la cible est deja bindee
+    void (*draw_top)(App *a);     // the target is already bound
     void (*draw_bottom)(App *a);
 } Scene;
 
 struct App {
     C3D_RenderTarget *top, *bottom;
-    C2D_TextBuf textbuf;          // clear a chaque frame
+    C2D_TextBuf textbuf;          // cleared every frame
 
     SceneId scene;
-    SceneId next_scene;           // applique en fin de frame, pas au milieu du draw
+    SceneId next_scene;           // applied at end of frame, not mid-draw
 
-    bool is_new3ds;               /* MVD => video possible, sinon audio seul */
+    bool is_new3ds;               /* MVD => video possible, else audio only */
     bool audio_ok;
     bool net_ok;
 
-    HttpCtx *http;                // ctx du thread principal (les threads ont le leur)
+    HttpCtx *http;                // main-thread ctx (threads have their own)
 
-    // liste partagee home <-> search
+    // list shared home <-> search
     TwitchStream streams[APP_MAX_STREAMS];
     Thumb        thumbs[APP_MAX_STREAMS];
     int  stream_count;
     int  sel;
-    int  scroll;                  // premier index visible
+    int  scroll;                  // first visible index
     char list_title[64];
 
     TwitchStream current;
 
-    char status[160];             // bandeau d'etat, UTF-8
-    u64  status_until;            // osGetTime() limite d'affichage
+    char status[160];             // status band, UTF-8
+    u64  status_until;            // osGetTime() display limit
 };
 
 extern Scene scene_home, scene_search, scene_player, scene_login;
@@ -67,5 +67,5 @@ extern Scene scene_home, scene_search, scene_player, scene_login;
 void app_set_status(App *a, const char *fmt, ...);
 void app_switch_scene(App *a, SceneId s);
 
-// clavier soft (applet), false si annule
+// soft keyboard (applet), false if cancelled
 bool app_keyboard(const char *hint, char *out, size_t out_size);

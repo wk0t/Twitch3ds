@@ -1,5 +1,5 @@
-// irc.h : le chat Twitch (IRC en clair). tourne dans son thread, irc_poll vide la file.
-// singleton.
+// irc.h: the Twitch chat (plaintext IRC). runs in its own thread, irc_poll drains the queue.
+// Singleton.
 #pragma once
 #include <3ds.h>
 #include <stdbool.h>
@@ -8,23 +8,23 @@
 #define IRC_TEXT_MAX 400
 
 typedef struct {
-    char nick[IRC_NICK_MAX];  /* display-name, ou le login si pas de tag */
+    char nick[IRC_NICK_MAX];  /* display-name, or the login if no tag */
     char color[8];            /* "#RRGGBB" ou "" */
     char text[IRC_TEXT_MAX];  /* UTF-8 */
-    bool is_system;           /* nos propres messages d'état (connexion...) */
+    bool is_system;           /* our own status messages (connecting...) */
 } ChatMsg;
 
-// démarre le thread et JOIN #channel.
-// username/oauth vides ou NULL => lecture seule anonyme.
-// oauth attendu en "oauth:xxxx", le préfixe est rajouté si besoin.
+// starts the thread and JOINs #channel.
+// empty/NULL username/oauth => anonymous read-only.
+// oauth expected as "oauth:xxxx"; the prefix is added if missing.
 Result irc_start(const char *channel, const char *username, const char *oauth);
 void   irc_stop(void);
 
 bool irc_connected(void);
-bool irc_can_send(void);   /* vrai seulement si loggué avec un compte */
+bool irc_can_send(void);   /* true only when logged in with an account */
 
-/* vide jusqu'à max messages, rend le nombre récupéré */
+/* drains up to max messages, returns how many were read */
 int irc_poll(ChatMsg *out, int max);
 
-/* envoie dans le canal. false si anonyme ou déconnecté. */
+/* sends to the channel. false if anonymous or disconnected. */
 bool irc_send(const char *text);

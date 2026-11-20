@@ -1,4 +1,4 @@
-// scene_home.c : top streams + toute la logique de liste (browse_*) que scene_search reprend telle quelle
+// scene_home.c: top streams + all the list logic (browse_*) that scene_search reuses as-is
 #include <stdio.h>
 #include <string.h>
 #include <3ds.h>
@@ -11,7 +11,7 @@
 #include "config.h"
 #include "update.h"
 
-/* géométrie de la liste, écran bas 320x240 */
+/* list geometry, bottom screen 320x240 */
 #define HEADER_H   24
 #define LIST_Y     26
 #define ROW_PITCH  42
@@ -19,23 +19,23 @@
 #define ROW_X      2
 #define ROW_W      313
 #define VISIBLE    5
-#define BAND_Y     216     /* le bandeau de hints commence ici */
+#define BAND_Y     216     /* the hints band starts here */
 
-// liste courante issue d'une recherche -> home rechargera le top au retour
+// current list comes from a search -> home reloads the top on return
 static bool s_list_foreign = false;
 
-/* etat DPAD/double-tap, une seule liste active a la fois */
+/* DPAD/double-tap state, only one list active at a time */
 static int s_repeat    = 0;
 static u32 s_frame     = 0;
 static u32 s_tap_frame = 0;
 static int s_tap_index = -1;
 
-/* --- helpers partagés avec scene_search.c --- */
+/* --- helpers shared with scene_search.c --- */
 
 HttpCtx *browse_http(App *a)
 {
-    // main.c ne remplit pas a->http, on le crée à la demande.
-    // le header Client-ID est posé par twitch.c, pas la peine de le refaire ici.
+    // main.c does not fill a->http; we create it on demand.
+    // the Client-ID header is set by twitch.c, no need to redo it here.
     if (!a->http)
         a->http = http_ctx_new();
     return a->http;
@@ -71,7 +71,7 @@ void browse_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touch,
 {
     s_frame++;
 
-    /* DPAD haut/bas : delai 15 frames avant la repet, puis un cran tous les 4 */
+    /* DPAD up/down: 15-frame delay before repeat, then one step every 4 frames */
     int dir = 0;
     if (kDown & KEY_DOWN)    { dir =  1; s_repeat = 0; }
     else if (kDown & KEY_UP) { dir = -1; s_repeat = 0; }
@@ -86,7 +86,7 @@ void browse_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touch,
     if (dir != 0 && a->stream_count > 0)
         a->sel += dir;
 
-    /* tap = selection, double tap (< 30 frames) = lecture */
+    /* tap = select, double tap (< 30 frames) = play */
     if ((kDown & KEY_TOUCH) && touch &&
         touch->py >= LIST_Y && touch->py < BAND_Y) {
         int idx = a->scroll + (touch->py - LIST_Y) / ROW_PITCH;
@@ -104,7 +104,7 @@ void browse_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touch,
         }
     }
 
-    /* on reborne sel/scroll, le nombre de streams a pu bouger entre deux frames */
+    /* clamp sel/scroll; the stream count may have changed between two frames */
     if (a->sel < 0) a->sel = 0;
     if (a->sel >= a->stream_count) a->sel = a->stream_count - 1;
     if (a->sel < 0) a->sel = 0;
@@ -127,13 +127,13 @@ void browse_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touch,
         app_switch_scene(a, SCENE_LOGIN);
 
     if ((kDown & KEY_R) && update_available()) {
-        // bloquant ~qq secondes, l'ecran se fige le temps du download
+        // blocking for a few seconds; the screen freezes during the download
         int r = update_download();
-        app_set_status(a, r == 0 ? "Maj installee ! Relance l'app."
-                                 : "Echec du telechargement de la maj");
+        app_set_status(a, r == 0 ? "Update installed! Restart the app."
+                                 : "Update download failed");
     }
 
-    /* charge la miniature du selectionne (no-op si meme URL) */
+    /* loads the selected thumbnail (no-op if same URL) */
     if (a->stream_count > 0 && a->streams[a->sel].preview_url[0])
         thumb_request(&a->thumbs[a->sel], a->streams[a->sel].preview_url);
 }
@@ -141,7 +141,7 @@ void browse_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touch,
 void browse_draw_top(App *a)
 {
     if (a->stream_count == 0) {
-        /* ecran vide : logo + statut */
+        /* empty screen: logo + status */
         const char *logo = "Twitch 3DS";
         float w = ui_text_width(a, 1.0f, logo);
         ui_text(a, (400.0f - w) / 2.0f, 90.0f, 1.0f, COL_PURPLE, logo);
@@ -153,16 +153,16 @@ void browse_draw_top(App *a)
         }
         char acc[96];
         if (g_config.username[0] && g_config.oauth[0])
-            snprintf(acc, sizeof acc, "Connecte : %s", g_config.username);
+            snprintf(acc, sizeof acc, "Connected: %s", g_config.username);
         else
-            snprintf(acc, sizeof acc, "Non connecte  -  SELECT pour se connecter");
+            snprintf(acc, sizeof acc, "Not connected  -  SELECT to sign in");
         float aw = ui_text_width(a, 0.4f, acc);
         u32 acol = (g_config.username[0] && g_config.oauth[0]) ? COL_GREEN : COL_TEXT_DIM;
         ui_text(a, (400.0f - aw) / 2.0f, 165.0f, 0.4f, acol, acc);
 
         if (update_available()) {
             char up[96];
-            snprintf(up, sizeof up, "Mise a jour %s dispo  -  R pour installer",
+            snprintf(up, sizeof up, "Update %s available  -  R to install",
                      update_latest());
             float uw = ui_text_width(a, 0.42f, up);
             ui_text(a, (400.0f - uw) / 2.0f, 192.0f, 0.42f, COL_GREEN, up);
@@ -176,13 +176,13 @@ void browse_draw_top(App *a)
     const TwitchStream *s = &a->streams[sel];
     Thumb *t = &a->thumbs[sel];
 
-    /* nom + badge LIVE. le nom est dessine 2x decale de 0.5px pour faire du gras */
+    /* name + LIVE badge. the name is drawn 2x offset by 0.5px for bold */
     ui_badge_live(a, 274.0f, 5.0f, s->viewers);
     float name_max = 274.0f - 40.0f - 8.0f;
     ui_text_ellipsis(a, 40.0f, 3.0f, 0.55f, COL_TEXT, s->display, name_max);
     ui_text_ellipsis(a, 40.5f, 3.0f, 0.55f, COL_TEXT, s->display, name_max);
 
-    /* miniature 320x180 */
+    /* thumbnail 320x180 */
     if (t->ready) {
         C2D_DrawImageAt(t->img, 40.0f, 24.0f, 0.5f, NULL, 1.0f, 1.0f);
     } else {
@@ -191,7 +191,7 @@ void browse_draw_top(App *a)
         ui_text(a, (400.0f - w) / 2.0f, 103.0f, 0.7f, COL_TEXT_DIM, "...");
     }
 
-    /* jeu + titre sous la miniature (titre sur 2 lignes max) */
+    /* game + title under the thumbnail (title on 2 lines max) */
     ui_text_ellipsis(a, 40.0f, 205.0f, 0.38f, COL_PURPLE, s->game, 320.0f);
     ui_text_wrap(a, 40.0f, 217.0f, 0.35f, COL_TEXT_DIM, s->title, 320.0f, 2);
 }
@@ -200,13 +200,13 @@ void browse_draw_bottom(App *a)
 {
     /* en-tete */
     ui_panel(0.0f, 0.0f, 320.0f, HEADER_H, COL_PURPLE);
-    float hint_w = ui_text_width(a, 0.4f, "Y: recherche");
-    ui_text(a, 320.0f - 6.0f - hint_w, 6.0f, 0.4f, COL_TEXT, "Y: recherche");
+    float hint_w = ui_text_width(a, 0.4f, "Y: search");
+    ui_text(a, 320.0f - 6.0f - hint_w, 6.0f, 0.4f, COL_TEXT, "Y: search");
     ui_text_ellipsis(a, 6.0f, 4.0f, 0.5f, COL_TEXT, a->list_title,
                      320.0f - 18.0f - hint_w);
 
     if (a->stream_count == 0) {
-        const char *msg = "Aucun stream (X : actualiser)";
+        const char *msg = "No streams (X: refresh)";
         float w = ui_text_width(a, 0.45f, msg);
         ui_text(a, (320.0f - w) / 2.0f, 110.0f, 0.45f, COL_TEXT_DIM, msg);
     }
@@ -218,7 +218,7 @@ void browse_draw_bottom(App *a)
         ui_panel(ROW_X, y, ROW_W, ROW_H,
                  (i == a->sel) ? COL_PURPLE_DARK : COL_PANEL);
 
-        /* viewers a droite : point rouge + nombre */
+        /* viewers on the right: red dot + count */
         char vbuf[24];
         fmt_viewers(vbuf, sizeof(vbuf), s->viewers);
         float dot_w = ui_text_width(a, 0.4f, "\u25CF ");
@@ -227,7 +227,7 @@ void browse_draw_bottom(App *a)
         ui_text(a, vx, y + 4.0f, 0.4f, COL_RED, "\u25CF ");
         ui_text(a, vx + dot_w, y + 4.0f, 0.4f, COL_TEXT, vbuf);
 
-        /* nom en gras (double passe) puis titre et jeu dessous */
+        /* name in bold (double pass), then title and game below */
         float name_max = vx - (ROW_X + 6.0f) - 6.0f;
         ui_text_ellipsis(a, ROW_X + 6.0f, y + 2.0f, 0.5f, COL_TEXT,
                          s->display, name_max);
@@ -250,17 +250,17 @@ void browse_draw_bottom(App *a)
         ui_panel(317.0f, ty, 2.0f, th, COL_PURPLE);
     }
 
-    /* bandeau bas : recouvre le debord de la 5e ligne et affiche les raccourcis */
+    /* bottom band: covers the overflow of the 5th row and shows the shortcuts */
     ui_panel(0.0f, BAND_Y, 320.0f, 240.0f - BAND_Y, COL_BG);
     if (update_available()) {
         char up[64];
-        snprintf(up, sizeof up, "Maj %s dispo - R", update_latest());
+        snprintf(up, sizeof up, "Update %s - R", update_latest());
         float uw = ui_text_width(a, 0.35f, up);
         ui_text(a, (320.0f - uw) / 2.0f, BAND_Y + 6.0f, 0.35f, COL_GREEN, up);
     } else {
         const char *hints = (a->scene == SCENE_SEARCH)
-            ? "A lire  B retour  X actu.  SELECT compte  START quitter"
-            : "A lire  X actu.  Y recherche  SELECT compte  START quitter";
+            ? "A play  B back  X refresh  SELECT account  START quit"
+            : "A play  X refresh  Y search  SELECT account  START quit";
         float hw = ui_text_width(a, 0.35f, hints);
         ui_text(a, (320.0f - hw) / 2.0f, BAND_Y + 6.0f, 0.35f, COL_TEXT_DIM,
                 hints);
@@ -269,7 +269,7 @@ void browse_draw_bottom(App *a)
 
 /* --- scene home --- */
 
-/* recharge le top. bloquant (~1s), le rendu est fige pendant l'appel */
+/* reloads the top. blocking (~1s), rendering freezes during the call */
 static void home_reload(App *a)
 {
     HttpCtx *http = browse_http(a);
@@ -280,17 +280,17 @@ static void home_reload(App *a)
     snprintf(a->list_title, sizeof(a->list_title), "Top streams");
     s_list_foreign = false;
     if (!http) {
-        app_set_status(a, "Erreur reseau (init HTTP)");
+        app_set_status(a, "Network error (HTTP init)");
         return;
     }
     int n = twitch_top_streams(http, a->streams, APP_MAX_STREAMS);
     if (n < 0) {
-        const char *g = twitch_last_error();          // erreur cote Twitch si dispo, sinon erreur HTTP brute
+        const char *g = twitch_last_error();          // Twitch-side error if any, else raw HTTP error
         const char *e = g[0] ? g : http_ctx_last_error(http);
         if (e[0])
-            app_set_status(a, "Erreur (%d): %s", n, e);
+            app_set_status(a, "Error (%d): %s", n, e);
         else
-            app_set_status(a, "Erreur reseau (%d)", n);
+            app_set_status(a, "Network error (%d)", n);
         return;
     }
     a->stream_count = n;
@@ -301,7 +301,7 @@ static void home_enter(App *a)
 {
     s_repeat = 0;
     s_tap_index = -1;
-    /* premier lancement, ou on revient d'une recherche */
+    /* first launch, or returning from a search */
     if (a->stream_count == 0 || s_list_foreign)
         home_reload(a);
 }

@@ -1,160 +1,159 @@
 # Twitch 3DS
 
-Client Twitch homebrew pour **New Nintendo 3DS / New 2DS** : navigation dans les
-top streams, recherche, **lecture vidéo en direct** (décodage H.264 matériel via
-MVD) et **chat intégré** (lecture + envoi de messages).
+Twitch homebrew client for **New Nintendo 3DS / New 2DS**: browse top streams,
+search, **live video playback** (hardware H.264 decoding via MVD) and **built-in
+chat** (read + send messages).
 
 ![Twitch 3DS](icon.png)
 
-## Fonctionnalités
+## Features
 
-- **Top streams** et **recherche** de chaînes/jeux (API GQL Twitch, miniatures JPEG)
-- **Lecture des streams live** :
-  - New 3DS/2DS : vidéo 160p/360p/480p décodée par la puce H.264 matérielle (MVD) + audio AAC
-  - Old 3DS/2DS : mode audio seul (pas de MVD sur ces consoles)
-- **Chat Twitch** sur l'écran du bas : lecture anonyme immédiate, envoi de
-  messages avec un token OAuth (voir plus bas)
-- UI adaptée aux deux écrans : vidéo en haut, chat/navigation tactile en bas
+- **Top streams** and **search** for channels/games (Twitch GQL API, JPEG thumbnails)
+- **Live stream playback**:
+  - New 3DS/2DS: 160p/360p/480p video decoded by the hardware H.264 chip (MVD) + AAC audio
+  - Old 3DS/2DS: audio-only mode (no MVD on those consoles)
+- **Twitch chat** on the bottom screen: instant anonymous read, sending messages
+  with an OAuth token (see below)
+- UI adapted to both screens: video on top, touch chat/navigation below
 
 ## Installation
 
-1. Console avec **Homebrew Launcher** (Luma3DS + boot9strap recommandés).
-2. Copier `twitch3ds.3dsx` dans `sd:/3ds/`.
-3. **Pour le son** : le fichier `sd:/3ds/dspfirm.cdc` doit exister. S'il manque,
-   lancer une fois l'homebrew [DSP1](https://github.com/zoogie/DSP1)
-   (« Dump DSP firmware ») — sans lui, la vidéo joue muette.
-4. Lancer *Twitch 3DS* depuis le Homebrew Launcher (Wi-Fi activé).
+1. Console with **Homebrew Launcher** (Luma3DS + boot9strap recommended).
+2. Copy `twitch3ds.3dsx` into `sd:/3ds/`.
+3. **For sound**: the file `sd:/3ds/dspfirm.cdc` must exist. If missing, run the
+   [DSP1](https://github.com/zoogie/DSP1) homebrew once ("Dump DSP firmware") —
+   without it, video plays silent.
+4. Launch *Twitch 3DS* from the Homebrew Launcher (Wi-Fi on).
 
-## Contrôles
+## Controls
 
-| Écran | Entrée | Action |
+| Screen | Input | Action |
 |---|---|---|
-| Liste | D-Pad haut/bas | naviguer |
-| Liste | A | lire le stream |
-| Liste | X | actualiser |
-| Liste | Y | recherche (clavier tactile) |
-| Liste | SELECT | connexion au compte Twitch |
-| Liste | R | installer la mise à jour (si dispo) |
-| Lecture | B | retour à la liste |
-| Lecture | SELECT | afficher/masquer les infos (qualité, buffer) |
-| Lecture | bouton « Écrire » | envoyer un message dans le chat |
-| Partout | START | quitter (depuis les listes) |
+| List | D-Pad up/down | navigate |
+| List | A | play the stream |
+| List | X | refresh |
+| List | Y | search (on-screen keyboard) |
+| List | SELECT | sign in to the Twitch account |
+| List | R | install the update (if available) |
+| Player | B | back to the list |
+| Player | SELECT | show/hide info (quality, buffer) |
+| Player | "Write" button | send a chat message |
+| Everywhere | START | quit (from the lists) |
 
-## Se connecter à son compte (pour écrire dans le chat)
+## Signing in (to write in chat)
 
-La lecture du chat marche sans compte. Pour **écrire**, connecte-toi directement
-depuis l'app, en toute sécurité (méthode « appareil » officielle de Twitch) :
+Reading the chat works without an account. To **write**, sign in directly from
+the app, safely (Twitch's official "device" method):
 
-1. Sur l'écran d'accueil, appuie sur **SELECT**.
-2. L'app affiche un **code** (ex. `GNSLNMLF`).
-3. Sur ton téléphone ou PC, va sur **twitch.tv/activate**, connecte-toi
-   (avec ta **double authentification / 2FA** comme d'habitude — elle est gérée
-   par Twitch, **jamais** par l'app) et entre le code.
-4. L'app détecte l'autorisation et enregistre la session : le bouton
-   « Écrire » devient actif dans le chat.
+1. On the home screen, press **SELECT**.
+2. The app shows a **code** (e.g. `GNSLNMLF`).
+3. On your phone or PC, go to **twitch.tv/activate**, sign in
+   (with your **2FA as usual** — handled by Twitch, **never** by the app) and
+   enter the code.
+4. The app detects the authorization and saves the session: the
+   "Write" button becomes active in the chat.
 
-> 🔒 Ton mot de passe et ta 2FA ne transitent **jamais** par la console : la
-> connexion se fait entièrement sur le site de Twitch. L'app ne reçoit qu'un
-> jeton limité au chat (`chat:read` + `chat:edit`), stocké dans
-> `sd:/3ds/twitch3ds/config.ini`.
+> Your password and 2FA **never** go through the console: login happens entirely
+> on Twitch's website. The app only receives a chat-scoped token
+> (`chat:read` + `chat:edit`), stored in `sd:/3ds/twitch3ds/config.ini`.
 
-### Configuration manuelle (optionnel)
+### Manual configuration (optional)
 
-`sd:/3ds/twitch3ds/config.ini` peut aussi être édité à la main :
+`sd:/3ds/twitch3ds/config.ini` can also be edited by hand:
 
 ```ini
-username=TonPseudoTwitch
+username=YourTwitchName
 oauth=oauth:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 quality=160p
 volume=100
 ```
 
-`quality` accepte `160p`, `360p`, `480p` ou `audio_only`.
-En Wi-Fi faible, `160p` (par défaut) est le plus fiable ; `480p` demande une
-très bonne connexion et sollicite fortement le décodeur.
+`quality` accepts `160p`, `360p`, `480p` or `audio_only`.
+On weak Wi-Fi, `160p` (the default) is the most reliable; `480p` needs a very
+good connection and pushes the decoder hard.
 
-## Mises à jour
+## Updates
 
-Au démarrage, l'app vérifie s'il existe une version plus récente sur les
-[releases GitHub](https://github.com/wk0t/Twitch3ds/releases). Si oui, un
-bandeau vert « Mise à jour dispo » s'affiche sur l'accueil — appuie sur **R**
-pour télécharger et remplacer le `.3dsx` automatiquement, puis relance l'app.
+At startup, the app checks whether a newer version exists in the
+[GitHub releases](https://github.com/wk0t/Twitch3ds/releases). If so, a green
+"Update available" banner shows on the home screen — press **R** to download
+and replace the `.3dsx` automatically, then restart the app.
 
-Tu peux aussi récupérer la dernière version à la main sur la page des releases.
+You can also grab the latest version manually from the releases page.
 
-## Compiler depuis les sources
+## Building from source
 
-Prérequis : [devkitPro](https://devkitpro.org/wiki/Getting_Started) avec
-devkitARM, libctru, citro2d/citro3d et les portlibs `3ds-curl`, `3ds-mbedtls`,
-`3ds-zlib`, `3ds-libjpeg-turbo` :
+Prerequisites: [devkitPro](https://devkitpro.org/wiki/Getting_Started) with
+devkitARM, libctru, citro2d/citro3d and the portlibs `3ds-curl`, `3ds-mbedtls`,
+`3ds-zlib`, `3ds-libjpeg-turbo`:
 
 ```bash
 pacman -S 3ds-dev 3ds-curl 3ds-mbedtls 3ds-zlib 3ds-libjpeg-turbo
 make
 ```
 
-Le `twitch3ds.3dsx` est produit à la racine.
+The `twitch3ds.3dsx` is produced at the repo root.
 
-## Architecture technique
+## Technical architecture
 
-| Module | Rôle |
+| Module | Role |
 |---|---|
-| `source/net_http.c` | HTTPS via libcurl + mbedtls (CA Mozilla embarquée en romfs) |
-| `source/twitch.c` | API GQL non officielle (client-id public du player web) + usher HLS |
-| `source/hls.c` | parseur de playlists média live |
-| `source/ts_demux.c` | démuxeur MPEG-TS (PAT/PMT dynamiques, PES → AU H.264 + ADTS AAC) |
-| `source/video_mvd.c` | décodage H.264 matériel MVDSTD → texture citro2d (New 3DS) |
-| `source/audio_aac.c` | décodage AAC-LC (Helix, virgule fixe ARM) → ndsp ; horloge maîtresse A/V |
-| `source/player.c` | orchestration : thread de téléchargement (cœur 2 New 3DS) + synchro sur l'horloge audio |
-| `source/irc.c` | chat IRC (tags IRCv3, PING/PONG, reconnexion) |
-| `source/ui/` | scènes citro2d (accueil, recherche, lecture) |
+| `source/net_http.c` | HTTPS via libcurl + mbedtls (Mozilla CA bundle embedded in romfs) |
+| `source/twitch.c` | unofficial GQL API (web player's public client-id) + usher HLS |
+| `source/hls.c` | live media playlist parser |
+| `source/ts_demux.c` | MPEG-TS demuxer (dynamic PAT/PMT, PES -> H.264 AU + ADTS AAC) |
+| `source/video_mvd.c` | hardware H.264 decoding MVDSTD -> citro2d texture (New 3DS) |
+| `source/audio_aac.c` | AAC-LC decoding (Helix, fixed-point ARM) -> ndsp; master A/V clock |
+| `source/player.c` | orchestration: download thread (core 2 of the New 3DS) + sync on the audio clock |
+| `source/irc.c` | IRC chat (IRCv3 tags, PING/PONG, reconnect) |
+| `source/ui/` | citro2d scenes (home, search, player) |
 
-## Problèmes fréquents
+## Troubleshooting
 
-| Ce que tu vois | D'où ça vient | Quoi faire |
+| What you see | Why | What to do |
 |---|---|---|
-| « Erreur reseau (…) » sur l'accueil | Wi-Fi coupé ou souci réseau | Vérifier que le Wi-Fi est actif. Le code entre parenthèses aide (voir plus bas) |
-| Erreur qui parle de `SSL` / `certificate` | **Date/heure de la console fausse** → certificat TLS refusé | Régler la date dans *Paramètres de la console → Autres paramètres → Date et heure* |
-| Vidéo muette (image OK, pas de son) | `sd:/3ds/dspfirm.cdc` absent | Lancer une fois [DSP1](https://github.com/zoogie/DSP1) pour dumper le firmware du DSP |
-| Pas d'image, juste le nom + « Lecture… » | Console sans puce MVD (Old 3DS / 2DS classique), ou MVD indisponible → mode audio seul | Normal sur Old 3DS/2DS. Sur New 3DS/2DS, réessayer |
-| Ça se fige ou coupe après quelques secondes | Wi-Fi trop lent pour la qualité choisie | Passer en `160p` (`quality=160p` dans `config.ini`) |
-| Image saccadée / en retard sur le son | 480p trop lourd pour la connexion / la console | Choisir `160p` ou `360p` |
-| Chat « Connexion au chat… » puis « Déconnecté » en boucle | Le réseau bloque le port 6667 (IRC) — rare, surtout en partage de connexion mobile | Essayer un autre Wi-Fi |
-| Bouton « Lecture seule » dans le chat | Pas connecté, ou jeton expiré | **SELECT** sur l'accueil pour (re)connecter le compte |
-| « Stream terminé / hors ligne » | La chaîne n'est pas en direct | Choisir un stream réellement en live |
-| Connexion : « Code expire » | Trop de temps pour autoriser sur twitch.tv/activate | Refaire **SELECT** et autoriser plus vite |
-| Connexion : « login introuvable » | Souci réseau pendant la validation du jeton | Réessayer |
-| Mise à jour : « Echec du telechargement » | Coupure réseau pendant le téléchargement | Réessayer, ou récupérer le `.3dsx` à la main sur la page des [Releases](https://github.com/wk0t/Twitch3ds/releases) |
-| Rien ne s'affiche / texte invisible (émulateur) | Fichiers système (police) manquants | Sur vraie console c'est bon ; sur émulateur il faut fournir les fichiers système. La vidéo, elle, ne marche **pas** sur émulateur (MVD non émulé) |
+| "Network error (...)" on the home screen | Wi-Fi off or network issue | Check that Wi-Fi is on. The code in parentheses helps (see below) |
+| Error mentioning `SSL` / `certificate` | **Console date/time is wrong** -> TLS certificate rejected | Fix the date in *System Settings -> Other Settings -> Date and Time* |
+| Mute video (picture OK, no sound) | `sd:/3ds/dspfirm.cdc` missing | Run [DSP1](https://github.com/zoogie/DSP1) once to dump the DSP firmware |
+| No picture, just the name + "Playing..." | Console without the MVD chip (Old 3DS / 2DS), or MVD unavailable -> audio-only mode | Normal on Old 3DS/2DS. On New 3DS/2DS, retry |
+| Freezes or cuts after a few seconds | Wi-Fi too slow for the chosen quality | Switch to `160p` (`quality=160p` in `config.ini`) |
+| Stuttering picture / video lagging behind audio | 480p too heavy for the connection / console | Pick `160p` or `360p` |
+| Chat shows "Connecting to chat..." then "Disconnected" in a loop | The network blocks port 6667 (IRC) — rare, mostly on mobile hotspot | Try another Wi-Fi |
+| "Read-only" button in the chat | Not signed in, or token expired | **SELECT** on the home screen to (re)sign in |
+| "Stream ended / offline" | The channel is not live | Pick a stream that is actually live |
+| Login: "Code expired" | Took too long to authorize on twitch.tv/activate | Press **SELECT** again and authorize faster |
+| Login: "login not found" | Network issue while validating the token | Retry |
+| Update: "Update download failed" | Network cut during the download | Retry, or download the `.3dsx` manually from the [Releases](https://github.com/wk0t/Twitch3ds/releases) page |
+| Nothing displays / invisible text (emulator) | Missing system files (font) | Fine on real hardware; on an emulator you must provide the system files. Video does **not** work on emulators (MVD is not emulated) |
 
-### Décoder le code d'« Erreur reseau (…) »
+### Decoding the "Network error (...)" code
 
-- **-6 / -7** → DNS ou connexion impossible (Wi-Fi ?)
-- **-28** → délai dépassé (réseau lent)
-- **-35 / -60** → problème TLS / certificat (le plus souvent : **date de la console** à corriger)
-- **-403 / -429** → Twitch a refusé la requête (réessayer un peu plus tard)
+- **-6 / -7** -> DNS or connection impossible (Wi-Fi?)
+- **-28** -> timeout (slow network)
+- **-35 / -60** -> TLS / certificate problem (most often: **console date** to fix)
+- **-403 / -429** -> Twitch refused the request (retry a bit later)
 
-## Limites connues
+## Known limitations
 
-- Les émotes du chat s'affichent en texte (pas d'images d'émotes).
-- Les VODs et clips ne sont pas gérés (live uniquement).
-- Sur Old 3DS/2DS : audio seul.
-- La 1ʳᵉ connexion à une chaîne prend quelques secondes (token + playlist + buffer).
+- Chat emotes are shown as text (no emote images).
+- VODs and clips are not supported (live only).
+- On Old 3DS/2DS: audio only.
+- The first connection to a channel takes a few seconds (token + playlist + buffer).
 
-## Crédits
+## Credits
 
-- Décodeur AAC : [Helix AAC](https://en.wikipedia.org/wiki/Helix_Universal_Server) (RealNetworks, RPSL)
+- AAC decoder: [Helix AAC](https://en.wikipedia.org/wiki/Helix_Universal_Server) (RealNetworks, RPSL)
   via [ESP8266Audio](https://github.com/earlephilhower/ESP8266Audio)
-- JSON : [cJSON](https://github.com/DaveGamble/cJSON) (MIT)
-- CA : bundle Mozilla via [curl.se](https://curl.se/docs/caextract.html)
-- Toolchain : [devkitPro](https://devkitpro.org) (libctru, citro2d, portlibs)
+- JSON: [cJSON](https://github.com/DaveGamble/cJSON) (MIT)
+- CA: Mozilla bundle via [curl.se](https://curl.se/docs/caextract.html)
+- Toolchain: [devkitPro](https://devkitpro.org) (libctru, citro2d, portlibs)
 
-## Performance New 3DS
+## New 3DS performance
 
-Pour tirer parti de la New 3DS/2DS, l'app :
-- active le mode **804 MHz** (`osSetSpeedupEnable`) ;
-- décode la vidéo H.264 sur la **puce MVD matérielle** (aucune charge CPU vidéo) ;
-- place le thread lourd (réseau + démux + décodage AAC) sur le **cœur 2**
-  exclusif de la New 3DS, laissant le cœur applicatif à l'UI 60 fps.
+To make the most of the New 3DS/2DS, the app:
+- enables **804 MHz** mode (`osSetSpeedupEnable`);
+- decodes H.264 video on the **hardware MVD chip** (no video CPU load);
+- places the heavy thread (network + demux + AAC decoding) on the New 3DS's
+  exclusive **core 2**, leaving the application core to the 60 fps UI.
 
-Application non affiliée à Twitch/Amazon ni à Nintendo.
+Not affiliated with Twitch/Amazon or Nintendo.

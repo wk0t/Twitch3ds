@@ -1,4 +1,4 @@
-// config.c : lecture/sauvegarde de la config dans sdmc:/3ds/twitch3ds/config.ini
+// config.c: read/save the config in sdmc:/3ds/twitch3ds/config.ini
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +20,7 @@ static void set_defaults(void)
     g_config.volume = 100;
 }
 
-// vire espaces et \r\n aux deux bouts, modifie s en place
+// strips spaces and \r\n at both ends, modifies s in place
 static char *trim(char *s)
 {
     while (*s && isspace((unsigned char)*s))
@@ -43,7 +43,7 @@ void config_load(void)
 
     FILE *f = fopen(CFG_PATH, "r");
     if (!f)
-        return;   // pas de fichier = premier lancement, on garde les defauts
+        return;   // no file = first launch, keep the defaults
 
     char line[512];
     while (fgets(line, sizeof(line), f)) {
@@ -70,7 +70,7 @@ void config_load(void)
             if (v > 100) v = 100;
             g_config.volume = v;
         }
-        // clé inconnue : on ignore
+        // unknown key: ignore it
     }
     fclose(f);
 
@@ -80,13 +80,13 @@ void config_load(void)
 
 void config_save(void)
 {
-    /* si les dossiers existent deja mkdir renvoie EEXIST, osef */
+    /* if the dirs already exist, mkdir returns EEXIST, no big deal */
     mkdir(CFG_DIR1, 0777);
     mkdir(CFG_DIR2, 0777);
 
     FILE *f = fopen(CFG_PATH, "w");
     if (!f)
-        return;   // SD en lecture seule ? tant pis, on laisse tomber
+        return;   // SD read-only? too bad, we give up
 
     fprintf(f, "username=%s\n", g_config.username);
     fprintf(f, "oauth=%s\n",    g_config.oauth);

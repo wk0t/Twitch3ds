@@ -1,4 +1,4 @@
-// irc.c : le chat Twitch. thread lecteur + file circulaire, reco auto, repli anonyme si le login foire.
+// irc.c: the Twitch chat. reader thread + circular queue, auto-reconnect, anonymous fallback if login fails.
 #include <3ds.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -21,12 +21,12 @@
 #define IRC_MAX_RETRY 5
 #define IRC_PRIO      0x2C
 
-/* pourquoi reader_loop a rendu la main */
+/* why reader_loop returned */
 enum {
     ACT_NONE = 0,
-    ACT_DISCONNECT,   /* socket morte / erreur réseau */
-    ACT_AUTHFAIL,     /* login refusé */
-    ACT_RECONNECT,    /* Twitch nous demande de reconnecter */
+    ACT_DISCONNECT,   /* dead socket / network error */
+    ACT_AUTHFAIL,     /* login refused */
+    ACT_RECONNECT,    /* Twitch asks us to reconnect */
 };
 
 static struct {
@@ -34,29 +34,29 @@ static struct {
     bool   running;
 
     volatile bool quit;
-    volatile bool connected;    /* on a reçu le 001 */
-    volatile bool authed;       /* loggué avec le compte (pas justinfan) */
+    volatile bool connected;    /* we got the 001 */
+    volatile bool authed;       /* logged in with the account (not justinfan) */
     bool use_auth;              /* tenter PASS/NICK au prochain connect */
-    bool dc_announced;          /* évite de re-poster "Déconnecté" en boucle */
+    bool dc_announced;          /* avoids re-posting "Disconnected" in a loop */
 
-    int  sock;                  /* -1 si fermé, protégé par slock */
-    char channel[64];           /* sans le '#', en minuscules */
+    int  sock;                  /* -1 if closed, guarded by slock */
+    char channel[64];           /* without the '#', lowercase */
     char username[64];
     char oauth[160];            /* "oauth:xxxx" */
 
-    LightLock qlock;            /* la file */
+    LightLock qlock;            /* the queue */
     LightLock slock;            /* sock + envois */
     ChatMsg queue[IRC_QUEUE_LEN];
     int qhead, qcount;
 } s = { .sock = -1 };
 
-/* que le thread lecteur y touche, donc static global ok */
+/* only the reader thread touches it, so a static global is ok */
 static char s_acc[IRC_LINE_MAX];
 static char s_rbuf[2048];
 
 /* ---------------------------------------------------------------- utils -- */
 
-/* strlcpy maison : si ça déborde, on recule pour pas couper un char UTF-8 en deux */
+/* home-made strlcpy: on overflow, back up so we do not split a UTF-8 char in two */
 static void scopy(char *dst, size_t cap, const char *src)
 {
     size_t n = strlen(src);
@@ -78,7 +78,7 @@ static void push_msg(const char *nick, const char *color, const char *text, bool
     scopy(m->text,  sizeof(m->text),  text  ? text  : "");
     m->is_system = sys;
     if (s.qcount == IRC_QUEUE_LEN)
-        s.qhead = (s.qhead + 1) % IRC_QUEUE_LEN;   /* file pleine : on vire le plus vieux */
+        s.qhead = (s.qhead + 1) % IRC_QUEUE_LEN;   /* queue full: drop the oldest */
     else
         s.qcount++;
     LightLock_Unlock(&s.qlock);
@@ -89,8 +89,8 @@ static void push_system(const char *text)
     push_msg("", "", text, true);
 }
 
-// envoi complet sous slock. socket non-bloquante donc on boucle sur EAGAIN,
-// avec un budget (~2s) pour pas rester coincé ici si ça part en vrille.
+// full send under slock. non-blocking socket so we loop on EAGAIN,
+// with a budget (~2s) so we do not get stuck here if it goes sideways.
 static bool send_raw(const char *data)
 {
     size_t len = strlen(data), off = 0;
@@ -115,9 +115,9 @@ static bool send_raw(const char *data)
     return ok && off == len;
 }
 
-/* ------------------------------------------------------------ parse IRC -- */
+/* ------------------------------------------------------------ IRC parse -- */
 
-// récupère un tag IRCv3 (display-name, color...) en déséchappant \s \: \\ \r \n
+// fetches an IRCv3 tag (display-name, color...) unescaping \s \: \\ \r \n
 static void tag_get(const char *tags, const char *key, char *out, size_t cap)
 {
     size_t klen = strlen(key);
@@ -131,13 +131,13 @@ static void tag_get(const char *tags, const char *key, char *out, size_t cap)
         if (seg > klen && strncmp(p, key, klen) == 0 && p[klen] == '=') {
             const char *v = p + klen + 1;
             size_t vlen = seg - klen - 1, o = 0;
-            /* on déséchappe dans un buffer local puis scopy pour couper propre :
-             * un pseudo bidon ne doit pas laisser d'UTF-8 tronqué dans out */
+            /* unescape into a local buffer then scopy to cut cleanly:
+             * a bogus nick must not leave truncated UTF-8 in out */
             char tmp[512];
             for (size_t i = 0; i < vlen && o + 1 < sizeof(tmp); i++) {
                 char c = v[i];
                 if (c == '\\') {
-                    if (i + 1 >= vlen) break;   /* backslash tout seul à la fin */
+                    if (i + 1 >= vlen) break;   /* lone backslash at the end */
                     switch (v[++i]) {
                         case 's':  c = ' ';   break;
                         case ':':  c = ';';   break;
@@ -159,13 +159,13 @@ static void tag_get(const char *tags, const char *key, char *out, size_t cap)
 
 static void handle_privmsg(const char *tags, const char *prefix, char *params)
 {
-    /* params = "#chan :message", le texte commence après le ':' */
+    /* params = "#chan :message", the text starts after the ':' */
     char *text = strchr(params, ':');
     if (!text)
         return;
     text++;
 
-    /* un /me arrive emballé dans \x01ACTION ... \x01, on déballe */
+    /* a /me arrives wrapped in \x01ACTION ... \x01, unwrap it */
     size_t tlen = strlen(text);
     if (tlen >= 9 && strncmp(text, "\001ACTION ", 8) == 0) {
         text += 8;
@@ -181,7 +181,7 @@ static void handle_privmsg(const char *tags, const char *prefix, char *params)
         tag_get(tags, "color", color, sizeof(color));
     }
     if (!nick[0] && prefix) {
-        /* pas de display-name : on prend le login dans "login!login@..." */
+        /* no display-name: take the login from "login!login@..." */
         const char *bang = strchr(prefix, '!');
         size_t n = bang ? (size_t)(bang - prefix) : strlen(prefix);
         if (n >= sizeof(nick)) n = sizeof(nick) - 1;
@@ -192,10 +192,10 @@ static void handle_privmsg(const char *tags, const char *prefix, char *params)
     push_msg(nick, color, text, false);
 }
 
-/* traite une ligne complète (sans le \r\n). rend un ACT_*. */
+/* handles one complete line (without \r\n). returns an ACT_*. */
 static int handle_line(char *line)
 {
-    /* le PONG doit partir tout de suite, avant de parser quoi que ce soit */
+    /* the PONG must go out immediately, before parsing anything */
     if (strncmp(line, "PING", 4) == 0) {
         char pong[256];
         snprintf(pong, sizeof(pong), "PONG%.240s\r\n", line + 4);
@@ -231,24 +231,24 @@ static int handle_line(char *line)
         s.authed = s.use_auth;
         s.connected = true;
         s.dc_announced = false;
-        push_system("Connecté au chat");
+        push_system("Connected to chat");
     } else if (strcmp(cmd, "PRIVMSG") == 0 && params) {
         handle_privmsg(tags, prefix, params);
     } else if (strcmp(cmd, "NOTICE") == 0 && params && !s.connected &&
                (strstr(params, "authentication failed") ||
                 strstr(params, "Improperly formatted"))) {
-        return ACT_AUTHFAIL;               /* token pourri -> on repasse anonyme */
+        return ACT_AUTHFAIL;               /* bad token -> fall back to anonymous */
     } else if (strcmp(cmd, "RECONNECT") == 0) {
         return ACT_RECONNECT;
     }
     return ACT_NONE;
 }
 
-/* --------------------------------------------------------------- réseau -- */
+/* --------------------------------------------------------------- network -- */
 
-// connect BLOQUANT exprès : sur le SOC du 3DS le non-bloquant + select marche pas
-// (connect rend EINPROGRESS et select signale jamais le socket prêt). on publie le
-// fd dans s.sock pour qu'irc_stop puisse le tuer, et on passe non-bloquant APRES.
+// deliberately BLOCKING connect: on the 3DS SOC, non-blocking + select does not
+// work (connect returns EINPROGRESS and select never signals the socket ready).
+// we publish the fd in s.sock so irc_stop can kill it, and switch to non-blocking AFTER.
 static int irc_open_socket(void)
 {
     struct addrinfo hints, *res = NULL;
@@ -267,13 +267,13 @@ static int irc_open_socket(void)
         if (f < 0)
             continue;
 
-        LightLock_Lock(&s.slock);           /* publie le fd avant de bloquer sur connect */
+        LightLock_Lock(&s.slock);           /* publish the fd before blocking on connect */
         s.sock = f;
         LightLock_Unlock(&s.slock);
 
         int rc = connect(f, ai->ai_addr, ai->ai_addrlen);
         if (rc == 0) {
-            int fl = fcntl(f, F_GETFL, 0);  /* passe non-bloquant pour la lecture */
+            int fl = fcntl(f, F_GETFL, 0);  /* switch to non-blocking for reading */
             if (fl >= 0)
                 fcntl(f, F_SETFL, fl | O_NONBLOCK);
             fd = f;
@@ -315,7 +315,7 @@ static bool send_handshake(void)
     return send_raw(buf);
 }
 
-// lit le socket, recompose les lignes jusqu'au \r\n. les lignes trop longues sont jetées.
+// reads the socket, reassembles lines up to \r\n. overlong lines are dropped.
 static int reader_loop(int fd)
 {
     size_t acc_len = 0;
@@ -324,10 +324,10 @@ static int reader_loop(int fd)
     while (!s.quit) {
         ssize_t n = recv(fd, s_rbuf, sizeof(s_rbuf), 0);
         if (n == 0)
-            return ACT_DISCONNECT;         /* le serveur a fermé */
+            return ACT_DISCONNECT;         /* the server closed */
         if (n < 0) {
             if (errno == EAGAIN || errno == EWOULDBLOCK) {
-                svcSleepThread(30 * 1000 * 1000LL);   /* rien à lire, on souffle 30 ms */
+                svcSleepThread(30 * 1000 * 1000LL);   /* nothing to read, breathe for 30 ms */
                 continue;
             }
             if (errno == EINTR)
@@ -353,14 +353,14 @@ static int reader_loop(int fd)
             } else if (acc_len < sizeof(s_acc) - 1) {
                 s_acc[acc_len++] = c;
             } else {
-                overflow = true;           /* ligne trop longue, poubelle */
+                overflow = true;           /* line too long, trash it */
             }
         }
     }
     return ACT_NONE;
 }
 
-/* dodo de 2s, coupé net si quit passe à true */
+/* 2 s nap, cut short if quit goes true */
 static void backoff_sleep(void)
 {
     for (int i = 0; i < 20 && !s.quit; i++)
@@ -389,7 +389,7 @@ static void irc_thread(void *arg)
         if (send_handshake())
             why = reader_loop(fd);
 
-        /* on ferme sous verrou pour qu'irc_send tombe jamais sur un fd déjà mort */
+        /* close under lock so irc_send never lands on an already-dead fd */
         LightLock_Lock(&s.slock);
         if (s.sock >= 0) {
             close(s.sock);
@@ -405,17 +405,17 @@ static void irc_thread(void *arg)
             break;
 
         if (why == ACT_AUTHFAIL) {
-            /* le token passe pas : on rebascule direct en anonyme (lecture seule) */
+            /* the token fails: fall back to anonymous (read-only) right away */
             s.use_auth = false;
-            push_system("Échec d'authentification, lecture seule");
+            push_system("Authentication failed, read-only");
             attempts = 0;
             continue;
         }
 
         if (was_logged) {
-            push_system("Déconnecté");
+            push_system("Disconnected");
             s.dc_announced = true;
-            attempts = 0;                  /* on avait été connecté : compteur remis à zéro */
+            attempts = 0;                  /* we had been connected: reset the counter */
         }
         attempts++;
         if (attempts < IRC_MAX_RETRY)
@@ -423,7 +423,7 @@ static void irc_thread(void *arg)
     }
 
     if (!s.quit && !s.dc_announced)
-        push_system("Déconnecté");         /* on abandonne après trop d'échecs */
+        push_system("Disconnected");         /* giving up after too many failures */
 }
 
 /* ------------------------------------------------------------ API irc.h -- */
@@ -433,7 +433,7 @@ Result irc_start(const char *channel, const char *username, const char *oauth)
     if (!channel || !channel[0])
         return -1;
 
-    irc_stop();                            /* on est un singleton : on repart propre */
+    irc_stop();                            /* we are a singleton: start clean */
 
     LightLock_Init(&s.qlock);
     LightLock_Init(&s.slock);
@@ -444,7 +444,7 @@ Result irc_start(const char *channel, const char *username, const char *oauth)
     s.sock = -1;
     s.qhead = s.qcount = 0;
 
-    /* normalise le canal : minuscules et sans le '#' */
+    /* normalize the channel: lowercase, without the '#' */
     if (channel[0] == '#')
         channel++;
     size_t i = 0;
@@ -468,12 +468,12 @@ Result irc_start(const char *channel, const char *username, const char *oauth)
         s.oauth[0] = '\0';
     }
 
-    push_system("Connexion au chat...");
+    push_system("Connecting to chat...");
 
     s.th = threadCreate(irc_thread, NULL, IRC_STACK, IRC_PRIO, 1, false);
-    if (!s.th)                             /* core 1 plein, on tente le core appli */
+    if (!s.th)                             /* core 1 full, try the app core */
         s.th = threadCreate(irc_thread, NULL, IRC_STACK, IRC_PRIO, 0, false);
-    if (!s.th)                             /* toujours pas : n'importe quel coeur libre */
+    if (!s.th)                             /* still no: any free core */
         s.th = threadCreate(irc_thread, NULL, IRC_STACK, IRC_PRIO, -2, false);
     if (!s.th) {
         LightLock_Lock(&s.qlock);
@@ -493,7 +493,7 @@ void irc_stop(void)
 
     s.quit = true;
 
-    /* shutdown pour débloquer le recv/send qui tourne peut-être dans le thread */
+    /* shutdown to unblock the recv/send possibly running in the thread */
     LightLock_Lock(&s.slock);
     if (s.sock >= 0)
         shutdown(s.sock, SHUT_RDWR);
@@ -503,7 +503,7 @@ void irc_stop(void)
     threadFree(s.th);
     s.th = NULL;
 
-    if (s.sock >= 0) {                     /* normalement le thread l'a déjà fermé, au cas où */
+    if (s.sock >= 0) {                     /* normally the thread already closed it, just in case */
         close(s.sock);
         s.sock = -1;
     }
@@ -549,17 +549,17 @@ bool irc_send(const char *text)
     if (!text || !text[0] || !irc_can_send())
         return false;
 
-    /* on remplace les CR/LF par des espaces, sinon on peut injecter des commandes IRC */
+    /* replace CR/LF with spaces, else we could inject IRC commands */
     char clean[IRC_TEXT_MAX];
     size_t o = 0, i = 0;
     for (; text[i] && o + 1 < sizeof(clean); i++)
         clean[o++] = (text[i] == '\r' || text[i] == '\n') ? ' ' : text[i];
     if (text[i]) {
-        /* ça a débordé : on rembobine pour pas laisser un caractère UTF-8 coupé */
+        /* it overflowed: rewind so we do not leave a cut UTF-8 character */
         while (o > 0 && ((unsigned char)clean[o - 1] & 0xC0) == 0x80)
             o--;
         if (o > 0 && ((unsigned char)clean[o - 1] & 0x80))
-            o--;                           /* octet de tête tout seul */
+            o--;                           /* lone lead byte */
     }
     clean[o] = '\0';
 
@@ -568,7 +568,7 @@ bool irc_send(const char *text)
     if (!send_raw(buf))
         return false;
 
-    /* Twitch nous renvoie pas nos propres messages, donc écho local */
+    /* Twitch does not send our own messages back, so local echo */
     push_msg(s.username, "#9146FF", clean, false);
     return true;
 }
