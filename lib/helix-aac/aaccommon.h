@@ -46,8 +46,8 @@
 #ifndef _AACCOMMON_H
 #define _AACCOMMON_H
 
-/* Portage 3DS : pas d'Arduino ; tables en RAM classique, SBR désactivé
-   (AAC-LC uniquement, les sources sbr*.c ne sont pas embarquées). */
+/* 3DS port: no Arduino; tables in regular RAM, SBR disabled
+   (AAC-LC only, the sbr*.c sources are not embedded). */
 #include <stdlib.h>
 #ifndef PROGMEM
 #define PROGMEM
