@@ -1,4 +1,4 @@
-// scene_login.c : login Twitch en device flow (code affiché, on poll jusqu'au jeton)
+// scene_login.c: Twitch login via device flow (code shown, we poll until the token)
 #include <stdio.h>
 #include <string.h>
 #include <3ds.h>
@@ -10,7 +10,7 @@
 
 typedef enum {
     L_STARTING,
-    L_WAITING,    /* code affiché, on attend l'autorisation */
+    L_WAITING,    /* code shown, waiting for authorization */
     L_SUCCESS,
     L_FAIL
 } LoginPhase;
@@ -30,7 +30,7 @@ static void login_enter(App *a)
 
     if (!a->http || twitch_device_start(a->http, &s_auth) != 0) {
         s_phase = L_FAIL;
-        snprintf(s_msg, sizeof s_msg, "Impossible de demarrer la connexion (reseau ?)");
+        snprintf(s_msg, sizeof s_msg, "Cannot start login (network?)");
         return;
     }
     u64 now = osGetTime();
@@ -45,11 +45,11 @@ static void do_poll(App *a)
     int r = twitch_device_poll(a->http, s_auth.device_code,
                                token, sizeof token, refresh, sizeof refresh);
     if (r == 1) {
-        // ok, faut encore choper le login avant de sauver
+        // ok, still need the login before saving
         char login[64];
         if (twitch_get_login(a->http, token, login, sizeof login) != 0 || !login[0]) {
             s_phase = L_FAIL;
-            snprintf(s_msg, sizeof s_msg, "Jeton obtenu mais login introuvable");
+            snprintf(s_msg, sizeof s_msg, "Token obtained but login not found");
             return;
         }
         snprintf(g_config.username, sizeof g_config.username, "%s", login);
@@ -62,13 +62,13 @@ static void do_poll(App *a)
         u64 now = osGetTime();
         if (now >= s_expire) {
             s_phase = L_FAIL;
-            snprintf(s_msg, sizeof s_msg, "Code expire. Reessaie.");
+            snprintf(s_msg, sizeof s_msg, "Code expired. Try again.");
         } else {
             s_next_poll = now + (u64)s_auth.interval * 1000;
         }
     } else {
         s_phase = L_FAIL;
-        snprintf(s_msg, sizeof s_msg, "Autorisation refusee ou expiree.");
+        snprintf(s_msg, sizeof s_msg, "Authorization refused or expired.");
     }
 }
 
@@ -85,19 +85,19 @@ static void login_update(App *a, u32 kDown, u32 kHeld, const touchPosition *touc
         return;
     }
     if (s_phase == L_WAITING && osGetTime() >= s_next_poll)
-        do_poll(a); // ça bloque ~1s mais l'écran bouge pas de toute façon
+        do_poll(a); // blocks ~1s but the screen does not move anyway
 }
 
 static void login_draw_top(App *a)
 {
     C2D_DrawRectSolid(0, 0, 0.0f, 400, 240, COL_PANEL);
-    ui_text(a, 16, 14, 0.6f, COL_PURPLE, "Connexion a Twitch");
+    ui_text(a, 16, 14, 0.6f, COL_PURPLE, "Sign in to Twitch");
 
     if (s_phase == L_SUCCESS) {
         char t[96];
-        snprintf(t, sizeof t, "Connecte : %s", s_login);
+        snprintf(t, sizeof t, "Connected: %s", s_login);
         ui_text(a, 16, 100, 0.7f, COL_GREEN, t);
-        ui_text(a, 16, 140, 0.45f, COL_TEXT_DIM, "Tu peux maintenant ecrire dans le chat.");
+        ui_text(a, 16, 140, 0.45f, COL_TEXT_DIM, "You can now write in the chat.");
         return;
     }
     if (s_phase == L_FAIL) {
@@ -105,10 +105,10 @@ static void login_draw_top(App *a)
         return;
     }
 
-    /* sinon on affiche les instructions + le code */
-    ui_text(a, 16, 64, 0.5f, COL_TEXT, "1. Sur ton tel/PC, ouvre :");
+    /* otherwise show the instructions + the code */
+    ui_text(a, 16, 64, 0.5f, COL_TEXT, "1. On your phone/PC, open:");
     ui_text(a, 32, 92, 0.6f, COL_TEXT, "twitch.tv/activate");
-    ui_text(a, 16, 130, 0.5f, COL_TEXT, "2. Entre ce code :");
+    ui_text(a, 16, 130, 0.5f, COL_TEXT, "2. Enter this code:");
 
     const char *code = s_auth.user_code[0] ? s_auth.user_code : "........";
     float cw = ui_text_width(a, 1.3f, code);
@@ -118,27 +118,27 @@ static void login_draw_top(App *a)
 static void login_draw_bottom(App *a)
 {
     C2D_DrawRectSolid(0, 0, 0.0f, 320, 24, COL_PURPLE);
-    ui_text(a, 8, 4, 0.45f, COL_TEXT, "Compte Twitch");
+    ui_text(a, 8, 4, 0.45f, COL_TEXT, "Twitch account");
 
     if (s_phase == L_WAITING || s_phase == L_STARTING) {
         ui_text_wrap(a, 10, 40, 0.45f, COL_TEXT_DIM,
-                     "En attente de ton autorisation dans le navigateur... "
-                     "La connexion (et la 2FA) se fait sur Twitch, jamais ici.",
+                     "Waiting for your authorization in the browser... "
+                     "Login (and 2FA) happens on Twitch, never here.",
                      300, 4);
-        // petits points qui clignotent, histoire que ça ait l'air vivant
+        // blinking dots, just to make it look alive
         int dots = (int)((osGetTime() / 400) % 4);
         char sp[8] = "   ";
         for (int i = 0; i < dots && i < 3; i++) sp[i] = '.';
         ui_text(a, 150, 120, 0.6f, COL_PURPLE, sp);
     } else if (s_phase == L_SUCCESS) {
-        ui_text(a, 10, 60, 0.5f, COL_GREEN, "Connecte avec succes !");
-        ui_text(a, 10, 200, 0.4f, COL_TEXT_DIM, "A / B : retour");
+        ui_text(a, 10, 60, 0.5f, COL_GREEN, "Signed in successfully!");
+        ui_text(a, 10, 200, 0.4f, COL_TEXT_DIM, "A / B: back");
     } else {
-        ui_text(a, 10, 60, 0.5f, COL_RED, "Echec de connexion");
-        ui_text(a, 10, 200, 0.4f, COL_TEXT_DIM, "B : retour");
+        ui_text(a, 10, 60, 0.5f, COL_RED, "Sign-in failed");
+        ui_text(a, 10, 200, 0.4f, COL_TEXT_DIM, "B: back");
     }
 
-    ui_text(a, 10, 218, 0.4f, COL_TEXT_DIM, "B : annuler");
+    ui_text(a, 10, 218, 0.4f, COL_TEXT_DIM, "B: cancel");
 }
 
 Scene scene_login = {

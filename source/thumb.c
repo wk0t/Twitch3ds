@@ -1,5 +1,5 @@
-// thumb.c : miniatures de streams (JPEG 320x180) chargées en tâche de fond.
-// worker qui fetch+décode, les textures C3D se créent que sur le main thread.
+// thumb.c: stream thumbnails (JPEG 320x180) loaded in the background.
+// worker that fetches+decodes; C3D textures are created only on the main thread.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,12 +11,12 @@
 #include "thumb.h"
 #include "net_http.h"
 
-/* état d'un slot (t->state) */
+/* state of a slot (t->state) */
 enum {
     TH_IDLE = 0,
-    TH_PENDING,    /* en file, attend le worker */
+    TH_PENDING,    /* queued, waiting for the worker */
     TH_LOADING,
-    TH_DECODED,    /* pixels prêts, reste la texture à créer (main thread) */
+    TH_DECODED,    /* pixels ready, texture left to create (main thread) */
     TH_READY,
     TH_FAILED,
 };
@@ -28,7 +28,7 @@ enum {
 #define TH_STACK     (64 * 1024)
 #define TH_URL_CAP   (sizeof(((Thumb *)0)->url))
 
-// linéaire -> tiled RGB565, pas de scaling
+// linear -> tiled RGB565, no scaling
 #define TH_XFER_FLAGS                                        \
     (GX_TRANSFER_FLIP_VERT(0) | GX_TRANSFER_OUT_TILED(1) |   \
      GX_TRANSFER_RAW_COPY(0) |                               \
@@ -36,7 +36,7 @@ enum {
      GX_TRANSFER_OUT_FORMAT(GX_TRANSFER_FMT_RGB565) |        \
      GX_TRANSFER_SCALING(GX_TRANSFER_SCALE_NO))
 
-/* les miniatures Twitch font 320x180, posées sur une texture 512x256 */
+/* Twitch thumbnails are 320x180, placed on a 512x256 texture */
 static const Tex3DS_SubTexture s_subtex = {
     .width  = 320,
     .height = 180,
@@ -51,17 +51,17 @@ static LightEvent s_event;
 static Thread     s_thread;
 static volatile bool s_running;
 static bool       s_inited;
-static HttpCtx   *s_http;   /* gardé par init/exit pour pouvoir l'annuler */
+static HttpCtx   *s_http;   /* kept by init/exit so we can cancel it */
 
-/* file de requêtes (anneau) pour le worker */
+/* request queue (ring) for the worker */
 static Thumb *s_queue[TH_QUEUE_MAX];
 static int    s_qhead, s_qcount;
 
-/* file des slots décodés, à transformer en texture */
+/* queue of decoded slots, to turn into textures */
 static Thumb *s_done[TH_DONE_MAX];
 static int    s_dhead, s_dcount;
 
-/* files, toujours manipulées sous s_lock */
+/* queues, always handled under s_lock */
 
 static bool queue_push(Thumb *t)
 {
@@ -81,14 +81,14 @@ static bool done_push(Thumb *t)
     return true;
 }
 
-/* décodage JPEG (côté worker) */
+/* JPEG decoding (worker side) */
 
 typedef struct {
     struct jpeg_error_mgr mgr;
     jmp_buf jb;
 } ThJpegErr;
 
-/* le error_exit par défaut de libjpeg appelle exit(), donc on longjmp à la place */
+/* libjpeg's default error_exit calls exit(), so we longjmp instead */
 static void th_jpeg_error_exit(j_common_ptr cinfo)
 {
     ThJpegErr *e = (ThJpegErr *)cinfo->err;
@@ -97,7 +97,7 @@ static void th_jpeg_error_exit(j_common_ptr cinfo)
 
 static void th_jpeg_silent(j_common_ptr cinfo)
 {
-    (void)cinfo; /* pas de log sur stderr */
+    (void)cinfo; /* no logging to stderr */
 }
 
 static bool thumb_decode_jpeg(const u8 *data, size_t len,
@@ -105,7 +105,7 @@ static bool thumb_decode_jpeg(const u8 *data, size_t len,
 {
     struct jpeg_decompress_struct cinfo;
     ThJpegErr jerr;
-    /* volatile : relus après le longjmp du handler d'erreur */
+    /* volatile: re-read after the longjmp from the error handler */
     u16 *volatile px  = NULL;
     u8  *volatile row = NULL;
 
@@ -149,7 +149,7 @@ static bool thumb_decode_jpeg(const u8 *data, size_t len,
         int y = (int)cinfo.output_scanline;
         JSAMPROW rp = row;
         if (jpeg_read_scanlines(&cinfo, &rp, 1) != 1)
-            longjmp(jerr.jb, 1); /* flux tronqué */
+            longjmp(jerr.jb, 1); /* truncated stream */
         const u8 *s = row;
         u16 *d = px + (size_t)y * (size_t)w;
         for (int i = 0; i < w; i++, s += 3)
@@ -166,7 +166,7 @@ static bool thumb_decode_jpeg(const u8 *data, size_t len,
     return true;
 }
 
-/* worker : réseau + décodage. Jamais de C3D/GX ici (main thread only). */
+/* worker: network + decoding. Never C3D/GX here (main thread only). */
 
 static void thumb_worker(void *arg)
 {
@@ -181,7 +181,7 @@ static void thumb_worker(void *arg)
             if (!s_running)
                 break;
 
-            /* prend la prochaine requête encore valide */
+            /* takes the next still-valid request */
             Thumb *t = NULL;
             char url[TH_URL_CAP];
             LightLock_Lock(&s_lock);
@@ -189,7 +189,7 @@ static void thumb_worker(void *arg)
                 Thumb *c = s_queue[s_qhead];
                 s_qhead = (s_qhead + 1) % TH_QUEUE_MAX;
                 s_qcount--;
-                if (c->state == TH_PENDING) { /* sinon l'entrée est périmée */
+                if (c->state == TH_PENDING) { /* else the entry is stale */
                     t = c;
                     break;
                 }
@@ -220,27 +220,27 @@ static void thumb_worker(void *arg)
                         t->pw = pw;
                         t->ph = ph;
                         t->state = TH_DECODED;
-                        pixels = NULL; /* le slot en est proprio maintenant */
+                        pixels = NULL; /* the slot owns it now */
                     } else {
                         t->failed = true;
                         t->state  = TH_FAILED;
                     }
                 } else {
-                    /* l'URL a changé en route : on jette, le slot redevient demandable */
+                    /* the URL changed along the way: drop it, the slot becomes requestable again */
                     t->state = TH_IDLE;
                 }
             }
-            /* sinon le slot a été reset/relâché entre-temps, on jette tout */
+            /* else the slot was reset/released meanwhile, drop everything */
             LightLock_Unlock(&s_lock);
             free(pixels);
         }
     }
 
     http_buf_free(&buf);
-    // s_http appartient à thumb_system_exit, on n'y touche pas ici
+    // s_http belongs to thumb_system_exit, do not touch it here
 }
 
-/* API publique, appelée depuis le thread principal */
+/* public API, called from the main thread */
 
 void thumb_system_init(void)
 {
@@ -253,9 +253,9 @@ void thumb_system_init(void)
     s_running = true;
     s_http = http_ctx_new();
 
-    /* on vise le cœur 2 (New 3DS), sinon syscore 1, sinon le cœur appli.
-       Le worker ne tourne qu'en navigation (lecteur fermé), donc le cœur 1
-       est libre à ce moment-là. */
+    /* target core 2 (New 3DS), else syscore 1, else the app core.
+       The worker only runs during browsing (player closed), so core 1
+       is free at that time. */
     s_thread = threadCreate(thumb_worker, NULL, TH_STACK, 0x2D, 2, false);
     if (!s_thread)
         s_thread = threadCreate(thumb_worker, NULL, TH_STACK, 0x2D, 1, false);
@@ -272,7 +272,7 @@ void thumb_system_exit(void)
         return;
     if (s_thread) {
         s_running = false;
-        /* abandonne un http_get en cours (sinon jusqu'à 15 s de gel à la sortie) */
+        /* aborts an ongoing http_get (else up to 15 s freeze on exit) */
         if (s_http)
             http_ctx_cancel(s_http);
         LightEvent_Signal(&s_event);
@@ -293,7 +293,7 @@ void thumb_request(Thumb *t, const char *url)
 {
     if (!t || !url || !url[0] || !s_inited)
         return;
-    if (!s_thread) { /* pas de worker : on échoue direct */
+    if (!s_thread) { /* no worker: fail directly */
         t->failed = true;
         t->state  = TH_FAILED;
         return;
@@ -309,11 +309,11 @@ void thumb_request(Thumb *t, const char *url)
     if (same && (t->ready || t->state == TH_PENDING ||
                  t->state == TH_LOADING || t->state == TH_DECODED)) {
         LightLock_Unlock(&s_lock);
-        return; /* déjà prêt ou déjà en cours pour cette URL */
+        return; /* already ready or already loading for this URL */
     }
 
     if (t->state == TH_PENDING) {
-        /* déjà en file, le worker prendra la nouvelle URL au dépilage */
+        /* already queued, the worker will pick the new URL at dequeue */
         memcpy(t->url, urlbuf, TH_URL_CAP);
         t->failed = false;
         LightLock_Unlock(&s_lock);
@@ -321,18 +321,18 @@ void thumb_request(Thumb *t, const char *url)
     }
 
     if (t->state == TH_LOADING) {
-        /* un vieux téléchargement tourne encore, il sera jeté à l'arrivée */
+        /* an old download is still running, it will be dropped on arrival */
         memcpy(t->url, urlbuf, TH_URL_CAP);
         t->failed = false;
         if (queue_push(t))
             t->state = TH_PENDING;
-        /* si la file est pleine on reste LOADING, le worker le repassera
-           IDLE (URL différente) et un prochain appel retentera */
+        /* if the queue is full we stay LOADING, the worker will set it back to
+           IDLE (different URL) and a later call will retry */
         LightLock_Unlock(&s_lock);
         return;
     }
 
-    /* slot au repos : on remet tout à zéro */
+    /* idle slot: reset everything */
     if (t->pixels) {
         free(t->pixels);
         t->pixels = NULL;
@@ -354,12 +354,12 @@ void thumb_request(Thumb *t, const char *url)
         LightLock_Unlock(&s_lock);
         LightEvent_Signal(&s_event);
     } else {
-        t->state = TH_IDLE; /* file pleine, on retentera au prochain appel */
+        t->state = TH_IDLE; /* queue full, retry on the next call */
         LightLock_Unlock(&s_lock);
     }
 }
 
-/* pixels -> texture. t n'est plus dans les files, il appartient au main. */
+/* pixels -> texture. t is no longer in the queues, the main thread owns it. */
 static void thumb_upload(Thumb *t)
 {
     int pw = t->pw, ph = t->ph;
@@ -392,7 +392,7 @@ static void thumb_upload(Thumb *t)
     free(t->pixels);
     t->pixels = NULL;
 
-    /* subtex partagée pour le 320x180 habituel, sinon on en alloue une */
+    /* shared subtex for the usual 320x180, else we allocate one */
     const Tex3DS_SubTexture *st = &s_subtex;
     if (pw != 320 || ph != 180) {
         Tex3DS_SubTexture *dyn = malloc(sizeof(*dyn));
@@ -436,7 +436,7 @@ void thumb_update(void)
             Thumb *c = s_done[s_dhead];
             s_dhead = (s_dhead + 1) % TH_DONE_MAX;
             s_dcount--;
-            if (c->state == TH_DECODED) { /* sinon le slot a été reset entre-temps */
+            if (c->state == TH_DECODED) { /* else the slot was reset meanwhile */
                 t = c;
                 break;
             }
@@ -454,8 +454,8 @@ void thumb_release(Thumb *t)
         return;
     if (s_inited)
         LightLock_Lock(&s_lock);
-    /* les entrées de file en cours deviennent périmées (state != PENDING),
-       et un download en cours sera jeté par le worker (state != LOADING) */
+    /* queued entries become stale (state != PENDING),
+       and an ongoing download will be dropped by the worker (state != LOADING) */
     if (t->pixels)
         free(t->pixels);
     if (t->img.subtex && t->img.subtex != &s_subtex)

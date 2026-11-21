@@ -1,6 +1,6 @@
-// net_http.c : petite couche HTTPS (libcurl + mbedtls sur soc:u)
-// le handle curl est gardé et réutilisé entre requêtes -> keep-alive TLS,
-// parce qu'un handshake complet coûte ~1-2s sur la 3DS.
+// net_http.c: small HTTPS layer (libcurl + mbedtls on soc:u)
+// the curl handle is kept and reused between requests -> TLS keep-alive,
+// because a full handshake costs ~1-2 s on the 3DS.
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
@@ -17,7 +17,7 @@
 struct HttpCtx {
     CURL              *easy;
     struct curl_slist *headers;
-    volatile bool      cancel;    // posé par un autre thread pour couper
+    volatile bool      cancel;    // set by another thread to abort
     char               err[128];
 };
 
@@ -100,7 +100,7 @@ void http_ctx_uncancel(HttpCtx *c)
         c->cancel = false;
 }
 
-// curl rappelle ça pendant le transfert (et l'attente) : retour !=0 = on coupe
+// curl calls this during the transfer (and the wait): return !=0 = abort
 static int xfer_cb(void *userdata, curl_off_t dltotal, curl_off_t dlnow,
                    curl_off_t ultotal, curl_off_t ulnow)
 {
@@ -118,7 +118,7 @@ void http_ctx_add_header(HttpCtx *c, const char *header_line)
         c->headers = nl;
 }
 
-// alloue si besoin puis vide le buffer, mais garde l'alloc existante
+// allocates if needed then clears the buffer, but keeps the existing alloc
 static int buf_reset(HttpBuf *b)
 {
     if (!b->data) {
@@ -142,7 +142,7 @@ void http_buf_free(HttpBuf *b)
     b->cap = 0;
 }
 
-// grossit le buffer x2 au besoin, garde toujours un NUL après les données
+// grows the buffer x2 when needed, always keeps a NUL after the data
 static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
 {
     HttpBuf *b = (HttpBuf *)userdata;
@@ -167,8 +167,8 @@ static size_t write_cb(char *ptr, size_t size, size_t nmemb, void *userdata)
     return n;
 }
 
-/* le handle est persistant, donc on réapplique tout à chaque fois :
-   sinon il garde les réglages de la requête d'avant */
+/* the handle is persistent, so we reapply everything every time:
+   else it keeps the settings of the previous request */
 static void set_common_opts(HttpCtx *c, const char *url, HttpBuf *out)
 {
     CURL *e = c->easy;
@@ -185,7 +185,7 @@ static void set_common_opts(HttpCtx *c, const char *url, HttpBuf *out)
     curl_easy_setopt(e, CURLOPT_BUFFERSIZE, 65536L);
     curl_easy_setopt(e, CURLOPT_WRITEFUNCTION, write_cb);
     curl_easy_setopt(e, CURLOPT_WRITEDATA, out);
-    // progress activé -> on peut couper tout de suite sur http_ctx_cancel
+    // progress enabled -> we can abort immediately via http_ctx_cancel
     curl_easy_setopt(e, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(e, CURLOPT_XFERINFOFUNCTION, xfer_cb);
     curl_easy_setopt(e, CURLOPT_XFERINFODATA, c);
@@ -220,7 +220,7 @@ int http_get(HttpCtx *c, const char *url, HttpBuf *out)
         return -(int)CURLE_OUT_OF_MEMORY;
 
     set_common_opts(c, url, out);
-    curl_easy_setopt(c->easy, CURLOPT_HTTPGET, 1L);   // repasse en GET si un POST traînait
+    curl_easy_setopt(c->easy, CURLOPT_HTTPGET, 1L);   // back to GET if a POST was lingering
     curl_easy_setopt(c->easy, CURLOPT_HTTPHEADER, c->headers);
 
     return do_perform(c);
@@ -234,7 +234,7 @@ static int do_post(HttpCtx *c, const char *url, const char *body,
     if (buf_reset(out) != 0)
         return -(int)CURLE_OUT_OF_MEMORY;
 
-    // copie temporaire des headers du ctx + le Content-Type, sans salir c->headers
+    // temp copy of the ctx headers + the Content-Type, without dirtying c->headers
     struct curl_slist *hdrs = NULL, *nl;
     for (const struct curl_slist *it = c->headers; it; it = it->next) {
         nl = curl_slist_append(hdrs, it->data);
@@ -258,8 +258,8 @@ static int do_post(HttpCtx *c, const char *url, const char *body,
 
     int r = do_perform(c);
 
-    // le handle persiste : faut pas y laisser de pointeurs vers la liste temp
-    // ou le body, qu'on va libérer juste après
+    // the handle persists: do not leave it pointers to the temp list
+    // or the body, which we free right after
     curl_easy_setopt(c->easy, CURLOPT_HTTPHEADER, c->headers);
     curl_easy_setopt(c->easy, CURLOPT_POSTFIELDS, NULL);
     curl_easy_setopt(c->easy, CURLOPT_HTTPGET, 1L);

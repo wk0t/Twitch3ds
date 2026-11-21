@@ -1,4 +1,4 @@
-// twitch.c : API Twitch non officielle (GQL + usher). singleton à état statique.
+// twitch.c: unofficial Twitch API (GQL + usher). singleton with static state.
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,8 +11,8 @@
     "https://usher.ttvnw.net/api/channel/hls/%s.m3u8?client_id=%s&token=%s&sig=%s" \
     "&allow_source=true&allow_audio_only=true&player=twitchweb&type=any"
 
-/* scratch statique : évite ~2 Ko de pile par TwitchQuality (les threads 3DS
-   ont une petite pile). du coup pas réentrant, mais on a un seul lecteur. */
+/* static scratch: avoids ~2 KiB of stack per TwitchQuality (3DS threads
+   have a small stack). so not reentrant, but we only have one player. */
 static TwitchQuality s_qtmp;
 
 /* ---------------------------------------------------------------- headers */
@@ -20,8 +20,8 @@ static TwitchQuality s_qtmp;
 #define TW_MAX_CTX 8
 static HttpCtx *s_seen_ctx[TW_MAX_CTX];
 
-/* pose "Client-ID" une seule fois par ctx. les ctx vivent toute l'appli,
-   donc pas de souci de réutilisation d'adresse après http_ctx_free. */
+/* sets "Client-ID" once per ctx. ctxs live for the whole app, so no
+   address-reuse issue after http_ctx_free. */
 static void tw_headers(HttpCtx *c)
 {
     for (int i = 0; i < TW_MAX_CTX; i++) {
@@ -37,16 +37,16 @@ static void tw_headers(HttpCtx *c)
             }
             if (expected == c)
                 return;
-            /* slot pris par un autre ctx entre-temps : on continue */
+            /* slot taken by another ctx meanwhile: carry on */
         }
     }
-    /* Table pleine (improbable) : header dupliqué sans gravité. */
+    /* Table full (unlikely): duplicated header, harmless. */
     http_ctx_add_header(c, "Client-ID: " TWITCH_CLIENT_ID);
 }
 
 /* ------------------------------------------------------------------ utils */
 
-/* Copie bornée qui ne coupe jamais une séquence UTF-8 multi-octets. */
+/* Bounded copy that never splits a multi-byte UTF-8 sequence. */
 static void utf8_copy(char *dst, size_t dst_size, const char *src)
 {
     if (!src || dst_size == 0) {
@@ -56,7 +56,7 @@ static void utf8_copy(char *dst, size_t dst_size, const char *src)
     size_t n = strlen(src);
     if (n >= dst_size) {
         n = dst_size - 1;
-        /* recule tant qu'on est sur un octet de continuation */
+        /* backs up while on a continuation byte */
         while (n > 0 && ((unsigned char)src[n] & 0xC0) == 0x80)
             n--;
     }
@@ -64,7 +64,7 @@ static void utf8_copy(char *dst, size_t dst_size, const char *src)
     dst[n] = '\0';
 }
 
-/* Extrait obj[key] (chaîne) vers dst, "" si absent/null. */
+/* Extracts obj[key] (string) into dst, "" if missing/null. */
 static void json_copy_str(const cJSON *obj, const char *key, char *dst, size_t dst_size)
 {
     dst[0] = '\0';
@@ -76,7 +76,7 @@ static void json_copy_str(const cJSON *obj, const char *key, char *dst, size_t d
 }
 
 /* percent-encoding (unreserved = alnum + - _ . ~).
-   retour : longueur écrite, -1 si dst trop petit. */
+   Returns: length written, -1 if dst too small. */
 static int url_encode(char *dst, size_t dst_size, const char *src)
 {
     static const char hex[] = "0123456789ABCDEF";
@@ -102,9 +102,9 @@ static int url_encode(char *dst, size_t dst_size, const char *src)
 
 /* ---------------------------------------------------------------- GQL POST */
 
-/* POST body sur l'endpoint GQL, retourne la racine cJSON ou NULL.
-   *code_out (optionnel) : négatif = transport / -1000 parse, sinon code HTTP. */
-/* dernier message d'erreur Twitch (champ GQL "errors"), pour l'UI. */
+/* POSTs body to the GQL endpoint, returns the cJSON root or NULL.
+   *code_out (optional): negative = transport / -1000 parse, else HTTP code. */
+/* last Twitch error message (GQL "errors" field), for the UI. */
 static char tw_err[192];
 
 const char *twitch_last_error(void)
@@ -112,7 +112,7 @@ const char *twitch_last_error(void)
     return tw_err;
 }
 
-/* Si la réponse GQL contient un tableau "errors", copie le 1er message. */
+/* If the GQL response has an "errors" array, copy the 1st message. */
 static void capture_gql_error(cJSON *root)
 {
     cJSON *errs = cJSON_GetObjectItemCaseSensitive(root, "errors");
@@ -145,15 +145,15 @@ static cJSON *gql_post(HttpCtx *c, const char *body, int *code_out)
     return root;
 }
 
-/* Traduit l'échec d'un gql_post en code d'erreur négatif exploitable par l'UI. */
+/* Translates a gql_post failure into a negative error code usable by the UI. */
 static int gql_err(int code)
 {
-    if (code < 0) return code;    /* -(CURLcode) transport, ou -1000 parse */
-    if (code == 0) return -9003;  /* curl OK mais aucun code HTTP (anormal) */
-    return -code;                 /* code HTTP non-200 (ex 403 -> -403) */
+    if (code < 0) return code;    /* -(CURLcode) transport, or -1000 parse */
+    if (code == 0) return -9003;  /* curl OK but no HTTP code (abnormal) */
+    return -code;                 /* non-200 HTTP code (e.g. 403 -> -403) */
 }
 
-/* Enveloppe {"query": doc} sérialisée ; à libérer avec cJSON_free. */
+/* Serialized {"query": doc} envelope; free with cJSON_free. */
 static char *body_from_doc(const char *doc)
 {
     cJSON *o = cJSON_CreateObject();
@@ -168,8 +168,8 @@ static char *body_from_doc(const char *doc)
     return s;
 }
 
-/* data.<field>.edges[].node -> out[]. build_preview : reconstruit l'URL de
-   miniature depuis le login (searchStreams ne renvoie pas previewImageURL). */
+/* data.<field>.edges[].node -> out[]. build_preview: rebuilds the thumbnail
+   URL from the login (searchStreams does not return previewImageURL). */
 static int parse_stream_list(cJSON *root, const char *field,
                              TwitchStream *out, int max, bool build_preview)
 {
@@ -195,12 +195,12 @@ static int parse_stream_list(cJSON *root, const char *field,
         json_copy_str(bc, "login", s->login, sizeof s->login);
         json_copy_str(bc, "displayName", s->display, sizeof s->display);
         if (!s->login[0])
-            continue; /* node inexploitable sans login */
+            continue; /* node unusable without a login */
         if (!s->display[0])
             utf8_copy(s->display, sizeof s->display, s->login);
 
         json_copy_str(node, "title", s->title, sizeof s->title);
-        /* game peut être null -> "" */
+        /* game can be null -> "" */
         json_copy_str(cJSON_GetObjectItemCaseSensitive(node, "game"),
                       "displayName", s->game, sizeof s->game);
 
@@ -218,13 +218,13 @@ static int parse_stream_list(cJSON *root, const char *field,
     return n;
 }
 
-/* ------------------------------------------------------------- API listes */
+/* ------------------------------------------------------------- list APIs */
 
 int twitch_top_streams(HttpCtx *c, TwitchStream *out, int max)
 {
     if (!c || !out || max <= 0)
         return -9001;
-    int first = max > 30 ? 30 : max;   /* Twitch plafonne streams(first:) à 30 */
+    int first = max > 30 ? 30 : max;   /* Twitch caps streams(first:) at 30 */
 
     char doc[384];
     snprintf(doc, sizeof doc,
@@ -251,10 +251,10 @@ int twitch_search_streams(HttpCtx *c, const char *query, TwitchStream *out, int 
 {
     if (!c || !query || !query[0] || !out || max <= 0)
         return -1;
-    int first = max > 30 ? 30 : max;   /* même plafond côté recherche */
+    int first = max > 30 ? 30 : max;   /* same cap on the search side */
 
-    /* échappement de la query : cJSON produit une chaîne quotée valide en
-       GraphQL (mêmes règles que JSON). */
+    /* query escaping: cJSON produces a quoted string valid in
+       GraphQL (same rules as JSON). */
     cJSON *qs = cJSON_CreateString(query);
     if (!qs)
         return -1;
@@ -288,16 +288,15 @@ int twitch_search_streams(HttpCtx *c, const char *query, TwitchStream *out, int 
 
 /* --------------------------------------------------------- master playlist */
 
-/* Parse les attributs après "#EXT-X-STREAM-INF:". Les valeurs quotées
- * peuvent contenir des virgules (CODECS="avc1...,mp4a...") : on respecte
- * les guillemets. */
+/* Parses the attributes after "#EXT-X-STREAM-INF:". Quoted values
+ * may contain commas (CODECS="avc1...,mp4a..."): we respect the quotes. */
 static void parse_stream_inf(const char *p, TwitchQuality *q)
 {
     while (*p) {
         const char *ks = p;
         while (*p && *p != '=' && *p != ',')
             p++;
-        if (*p != '=') {          /* attribut sans valeur : on saute */
+        if (*p != '=') {          /* attribute without value: skip */
             if (*p) p++;
             continue;
         }
@@ -338,7 +337,7 @@ static void parse_stream_inf(const char *p, TwitchQuality *q)
     }
 }
 
-/* Parse in-place (text modifié) de la master playlist. */
+/* In-place parse (text modified) of the master playlist. */
 static int parse_master(char *text, TwitchQuality *out, int max)
 {
     int count = 0;
@@ -354,14 +353,14 @@ static int parse_master(char *text, TwitchQuality *out, int max)
             line[--len] = '\0';
 
         if (len == 0) {
-            /* ligne vide : ignorée */
+            /* empty line: ignored */
         } else if (line[0] == '#') {
             if (!strncmp(line, "#EXT-X-STREAM-INF:", 18)) {
                 memset(&s_qtmp, 0, sizeof s_qtmp);
                 parse_stream_inf(line + 18, &s_qtmp);
                 pending = true;
             }
-            /* les autres tags entre STREAM-INF et l'URI n'annulent pas l'attente */
+            /* other tags between STREAM-INF and the URI do not cancel the wait */
         } else {
             if (pending && s_qtmp.name[0] && s_qtmp.bandwidth > 0) {
                 snprintf(s_qtmp.url, sizeof s_qtmp.url, "%s", line);
@@ -374,7 +373,7 @@ static int parse_master(char *text, TwitchQuality *out, int max)
     return count;
 }
 
-/* Login Twitch : lettres, chiffres, underscore uniquement (anti-injection URL). */
+/* Twitch login: letters, digits, underscore only (anti URL-injection). */
 static bool login_valid(const char *login)
 {
     size_t n = strlen(login);
@@ -438,7 +437,7 @@ int twitch_get_qualities(HttpCtx *c, const char *login, TwitchQuality *out, int 
     cJSON *data = cJSON_GetObjectItemCaseSensitive(root, "data");
     cJSON *tok  = data ? cJSON_GetObjectItemCaseSensitive(data, "streamPlaybackAccessToken") : NULL;
     if (!cJSON_IsObject(tok)) {
-        /* token null -> chaîne hors-ligne */
+        /* null token -> offline string */
         cJSON_Delete(root);
         return 0;
     }
@@ -450,7 +449,7 @@ int twitch_get_qualities(HttpCtx *c, const char *login, TwitchQuality *out, int 
         return 0;
     }
 
-    /* value est un JSON stringifié : URL-encoding intégral. */
+    /* value is a JSON-stringified string: full URL-encoding. */
     size_t enc_cap = strlen(jval->valuestring) * 3 + 1;
     char *enc = malloc(enc_cap);
     if (!enc) {
@@ -481,7 +480,7 @@ int twitch_get_qualities(HttpCtx *c, const char *login, TwitchQuality *out, int 
     int code = http_get(c, url, &buf);
     free(url);
 
-    if (code == 404) { /* hors-ligne */
+    if (code == 404) { /* offline */
         http_buf_free(&buf);
         return 0;
     }
@@ -490,11 +489,11 @@ int twitch_get_qualities(HttpCtx *c, const char *login, TwitchQuality *out, int 
         return code < 0 ? code : -1;
     }
 
-    /* 3. Parse de la master playlist */
+    /* 3. Parse the master playlist */
     int count = parse_master((char *)buf.data, out, max);
     http_buf_free(&buf);
 
-    /* 4. tri par bande passante croissante (tri sélection) */
+    /* 4. sort by increasing bandwidth (selection sort) */
     for (int i = 0; i + 1 < count; i++) {
         int m = i;
         for (int j = i + 1; j < count; j++)
@@ -516,7 +515,7 @@ int twitch_get_qualities(HttpCtx *c, const char *login, TwitchQuality *out, int 
 #define TW_VALIDATE_URL "https://id.twitch.tv/oauth2/validate"
 #define TW_SCOPES       "chat:read chat:edit"
 
-/* Copie bornée d'un champ chaîne JSON. Retour : true si présent. */
+/* Bounded copy of a JSON string field. Returns: true if present. */
 static bool json_str(cJSON *o, const char *key, char *dst, size_t sz)
 {
     cJSON *v = cJSON_GetObjectItemCaseSensitive(o, key);
@@ -581,7 +580,7 @@ int twitch_device_poll(HttpCtx *c, const char *device_code,
     int code = http_post_form(c, TW_TOKEN_URL, body, &buf);
     if ((code < 200 && code != 400) || !buf.data) {
         http_buf_free(&buf);
-        return -1;   /* erreur transport */
+        return -1;   /* transport error */
     }
 
     cJSON *root = cJSON_ParseWithLength((const char *)buf.data, buf.len);
@@ -593,7 +592,7 @@ int twitch_device_poll(HttpCtx *c, const char *device_code,
     if (code == 200 && json_str(root, "access_token", token, token_size)) {
         if (refresh)
             json_str(root, "refresh_token", refresh, refresh_size);
-        ret = 1;                                  /* autorisé */
+        ret = 1;                                  /* authorized */
     } else {
         char msg[64] = {0};
         json_str(root, "message", msg, sizeof msg);
@@ -605,13 +604,13 @@ int twitch_device_poll(HttpCtx *c, const char *device_code,
 
 int twitch_get_login(HttpCtx *c, const char *token, char *login, size_t size)
 {
-    (void)c; /* contexte dédié : en-têtes Authorization isolés */
+    (void)c; /* dedicated ctx: isolated Authorization headers */
     if (!token || !login || size == 0)
         return -1;
     login[0] = '\0';
 
-    /* /validate marche avec n'importe quel jeton (contrairement à Helix qui
-       veut un client-id enregistré). en-tête "Authorization: OAuth <token>". */
+    /* /validate works with any token (unlike Helix which wants a registered
+       client-id). header "Authorization: OAuth <token>". */
     HttpCtx *ac = http_ctx_new();
     if (!ac)
         return -1;

@@ -1,4 +1,4 @@
-// version.h : version de l'app + repo pour la vérif de maj
+// version.h: app version + repo for the update check
 #pragma once
 
 #define APP_VERSION  "1.0.0"

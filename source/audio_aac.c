@@ -1,6 +1,6 @@
-// audio_aac.c : décode l'AAC (Helix) et pousse le PCM dans ndsp.
-// Le décodage tourne dans le thread qui appelle audio_feed(), le reste se lit
-// depuis le thread principal, d'où le LightLock.
+// audio_aac.c: decodes AAC (Helix) and pushes PCM into ndsp.
+// Decoding runs in the thread calling audio_feed(); the rest is read
+// from the main thread, hence the LightLock.
 #include <stdlib.h>
 #include <string.h>
 #include <3ds.h>
@@ -10,42 +10,42 @@
 
 #define AUDIO_CH     0
 #define RING_N       32
-#define FRAME_SAMPS  1024                              /* samples/canal, une trame AAC-LC */
-#define PCM_BYTES    (FRAME_SAMPS * 2 * sizeof(s16))   /* stéréo entrelacé PCM16 */
+#define FRAME_SAMPS  1024                              /* samples/channel, one AAC-LC frame */
+#define PCM_BYTES    (FRAME_SAMPS * 2 * sizeof(s16))   /* interleaved stereo PCM16 */
 #define PENDING_MAX  (256 * 1024)
 
 typedef struct {
     bool init;
-    bool available;      /* ndsp ok (dspfirm.cdc présent) */
+    bool available;      /* ndsp ok (dspfirm.cdc present) */
     bool started;
 
     HAACDecoder hdec;
     LightLock   lock;
 
-    /* anneau de wavebufs ndsp, rempli dans l'ordre */
-    s16        *pcm_pool;            /* linearAlloc, RING_N tranches de PCM_BYTES */
+    /* ring of ndsp wavebufs, filled in order */
+    s16        *pcm_pool;            /* linearAlloc, RING_N chunks of PCM_BYTES */
     ndspWaveBuf ring[RING_N];
     s64         ring_pts[RING_N];
     u32         ring_dur[RING_N];
     int         ring_next;
-    int         ring_tail;           /* plus vieux slot encore en vol */
+    int         ring_tail;           /* oldest slot still in flight */
     int         in_flight;
 
     bool  chn_cfg;
     int   sample_rate;
     float volume;
 
-    /* reliquat ADTS pas encore décodé (ring plein ou trame coupée) */
+    /* ADTS leftover not yet decoded (ring full or cut frame) */
     u8    *pending;
     size_t pending_len;
-    s64    pending_pts;              /* PTS de la 1re trame, -1 si inconnu */
+    s64    pending_pts;              /* PTS of the 1st frame, -1 if unknown */
 
-    /* horloge : dernier wavebuf DONE + temps écoulé depuis */
-    s64 last_done_pts;               /* -1 tant que rien n'a joué */
+    /* clock: last DONE wavebuf + elapsed time since */
+    s64 last_done_pts;               /* -1 until something played */
     u64 last_done_time;
     s64 queued_end_pts;
 
-    /* horloge bidon quand y'a pas de DSP */
+    /* fake clock when there is no DSP */
     s64 sim_base_pts;
     u64 sim_base_time;
     s64 sim_end_pts;
@@ -53,7 +53,7 @@ typedef struct {
 
 static AudioState s;
 
-/* buffer de sortie Helix, touché seulement sous lock */
+/* Helix output buffer, touched only under lock */
 static s16 s_decbuf[AAC_MAX_NSAMPS * AAC_MAX_NCHANS];
 
 static const int s_adts_rates[16] = {
@@ -61,7 +61,7 @@ static const int s_adts_rates[16] = {
     16000, 12000, 11025, 8000, 7350, 0, 0, 0
 };
 
-/* lit un en-tête ADTS, renvoie la taille de trame ou -1 */
+/* reads an ADTS header, returns the frame size or -1 */
 static int adts_frame_len(const u8 *p, size_t len, int *samplerate)
 {
     if (len < 7 || p[0] != 0xFF || (p[1] & 0xF6) != 0xF0)
@@ -75,7 +75,7 @@ static int adts_frame_len(const u8 *p, size_t len, int *samplerate)
     return fl;
 }
 
-/* durée d'une trame (1024 samples) en unités 90 kHz */
+/* one frame (1024 samples) duration in 90 kHz units */
 static u32 frame_dur90k(int samplerate)
 {
     if (samplerate <= 0)
@@ -83,7 +83,7 @@ static u32 frame_dur90k(int samplerate)
     return (u32)((1024ULL * 90000 + samplerate / 2) / samplerate);
 }
 
-/* compte les trames ADTS entières du buffer (pour estimer la durée en file) */
+/* counts whole ADTS frames in the buffer (to estimate the queued duration) */
 static void adts_scan(const u8 *p, size_t len, int *frames, int *samplerate)
 {
     int n = 0;
@@ -108,7 +108,7 @@ static void adts_scan(const u8 *p, size_t len, int *frames, int *samplerate)
     *frames = n;
 }
 
-/* avance last_done_pts sur les wavebufs finis (lock tenu) */
+/* advances last_done_pts over finished wavebufs (lock held) */
 static void clock_scan(void)
 {
     while (s.in_flight > 0 && s.ring[s.ring_tail].status == NDSP_WBUF_DONE) {
@@ -119,7 +119,7 @@ static void clock_scan(void)
     }
 }
 
-/* horloge courante en 90 kHz (lock tenu), -1 si rien joué */
+/* current clock in 90 kHz (lock held), -1 if nothing played */
 static s64 clock_now(void)
 {
     if (!s.available) {
@@ -147,7 +147,7 @@ static void apply_mix(void)
     ndspChnSetMix(AUDIO_CH, mix);
 }
 
-/* config du canal 0, à la 1re trame décodée (lock tenu) */
+/* channel 0 config, at the 1st decoded frame (lock held) */
 static void chn_configure(int rate)
 {
     ndspChnReset(AUDIO_CH);
@@ -159,7 +159,7 @@ static void chn_configure(int rate)
     s.chn_cfg = true;
 }
 
-/* décode le reliquat vers l'anneau tant qu'il reste de la place (lock tenu) */
+/* decodes the leftover into the ring while there is room (lock held) */
 static void pump_ring(void)
 {
     for (;;) {
@@ -169,18 +169,18 @@ static void pump_ring(void)
         clock_scan();
         ndspWaveBuf *wb = &s.ring[s.ring_next];
         if (wb->status == NDSP_WBUF_QUEUED || wb->status == NDSP_WBUF_PLAYING)
-            break; /* anneau plein, le reste patiente dans pending */
+            break; /* ring full, the rest waits in pending */
 
         unsigned char *in = s.pending;
         int left = (int)s.pending_len;
         int err = AACDecode(s.hdec, &in, &left, s_decbuf);
 
         if (err == ERR_AAC_INDATA_UNDERFLOW)
-            break; /* trame pas complète, on attend la suite */
+            break; /* incomplete frame, wait for more */
 
         if (err < 0) {
-            /* trame pourrie : on resync sur le prochain sync ADTS.
-               Helix n'a pas bougé les pointeurs quand ça foire. */
+            /* corrupt frame: resync on the next ADTS sync.
+               Helix did not move the pointers when it fails. */
             int idx = AACFindSyncWord(s.pending + 1, (int)s.pending_len - 1);
             if (idx < 0) {
                 s.pending_len = 0;
@@ -191,7 +191,7 @@ static void pump_ring(void)
             continue;
         }
 
-        /* ok, Helix a mangé une trame ; on recompacte le reste en tête */
+        /* ok, Helix consumed a frame; we compact the rest back to the front */
         s.pending_len = (size_t)left;
         if (left > 0)
             memmove(s.pending, in, (size_t)left);
@@ -214,7 +214,7 @@ static void pump_ring(void)
 
         s16 *dst = s.pcm_pool + (size_t)s.ring_next * (FRAME_SAMPS * 2);
         if (fi.nChans == 1) {
-            /* mono : on double en stéréo entrelacé */
+            /* mono: duplicate into interleaved stereo */
             for (int i = 0; i < spc; i++) {
                 dst[2 * i]     = s_decbuf[i];
                 dst[2 * i + 1] = s_decbuf[i];
@@ -235,7 +235,7 @@ static void pump_ring(void)
         ndspChnWaveBufAdd(AUDIO_CH, wb);
 
         if (s.last_done_pts < 0) {
-            /* 1re trame : la lecture démarre là */
+            /* 1st frame: playback starts there */
             s.last_done_pts  = pts;
             s.last_done_time = osGetTime();
         }
@@ -247,7 +247,7 @@ static void pump_ring(void)
     }
 }
 
-/* remet tout à zéro : files ndsp, anneau, reliquat, horloges (lock tenu) */
+/* resets everything: ndsp queues, ring, leftover, clocks (lock held) */
 static void purge_locked(void)
 {
     if (s.available) {
@@ -298,7 +298,7 @@ Result audio_init(void)
         return MAKERESULT(RL_FATAL, RS_OUTOFRESOURCE, RM_APPLICATION, RD_OUT_OF_MEMORY);
     }
 
-    /* si ndspInit rate (pas de dspfirm.cdc) on joue muet, c'est pas fatal */
+    /* if ndspInit fails (no dspfirm.cdc) we play silent, not fatal */
     if (R_SUCCEEDED(ndspInit())) {
         s.pcm_pool = linearAlloc(RING_N * PCM_BYTES);
         if (s.pcm_pool) {
@@ -379,7 +379,7 @@ void audio_feed(const u8 *data, size_t len, s64 pts90k)
     }
 
     if (!s.available) {
-        /* pas de DSP : on fait tourner une horloge calée sur le temps réel */
+        /* no DSP: run a clock aligned on real time */
         int frames = 0, sr = 0;
         adts_scan(data, len, &frames, &sr);
         if (pts90k >= 0) {
@@ -395,7 +395,7 @@ void audio_feed(const u8 *data, size_t len, s64 pts90k)
         return;
     }
 
-    /* payload délirant, plus gros que tout le buffer : on garde que la fin */
+    /* insane payload, bigger than the whole buffer: keep only the tail */
     if (len >= PENDING_MAX) {
         data += len - PENDING_MAX / 2;
         len = PENDING_MAX / 2;
@@ -403,7 +403,7 @@ void audio_feed(const u8 *data, size_t len, s64 pts90k)
         s.pending_pts = -1;
     }
 
-    /* ça déborde : on jette les vieilles trames (le player a pris du retard) */
+    /* overflow: drop the old frames (the player fell behind) */
     if (s.pending_len + len > PENDING_MAX) {
         size_t need = s.pending_len + len - PENDING_MAX;
         size_t drop = 0;
@@ -436,8 +436,8 @@ void audio_feed(const u8 *data, size_t len, s64 pts90k)
         }
     }
 
-    /* PTS de la 1re trame : celui du PES si le reliquat est vide, sinon on
-       continue en ajoutant la durée des trames une par une */
+    /* PTS of the 1st frame: the PES one if the leftover is empty, else we
+       keep adding the frame duration one by one */
     if (s.pending_len == 0 && pts90k >= 0)
         s.pending_pts = pts90k;
     else if (s.pending_pts < 0)
@@ -456,7 +456,7 @@ void audio_update(void)
         return;
     LightLock_Lock(&s.lock);
     if (s.started)
-        pump_ring();   /* recharge l'anneau au fur et à mesure */
+        pump_ring();   /* refills the ring as it goes */
     LightLock_Unlock(&s.lock);
 }
 

@@ -1,13 +1,13 @@
-// update.h : vérif d'une nouvelle version sur les releases GitHub
+// update.h: checks for a newer version in the GitHub releases
 #pragma once
 #include <stdbool.h>
 
-// lance la vérif en tâche de fond (une seule fois)
+// starts the check in the background (once)
 void update_start_check(void);
 
-bool update_available(void);      // une version plus récente existe
-const char *update_latest(void);  // tag de la dernière release, ex "v1.1.0"
+bool update_available(void);      // a newer version exists
+const char *update_latest(void);  // latest release tag, e.g. "v1.1.0"
 
-// télécharge le .3dsx de la dernière release et remplace le fichier sur la SD.
-// bloquant (quelques secondes). 0 si ok, négatif sinon.
+// downloads the .3dsx of the latest release and replaces the file on the SD.
+// blocking (a few seconds). 0 if ok, negative otherwise.
 int update_download(void);

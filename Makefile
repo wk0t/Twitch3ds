@@ -20,7 +20,7 @@ GFXBUILD	:=	$(BUILD)
 ROMFS		:=	romfs
 
 APP_TITLE		:=	Twitch 3DS
-APP_DESCRIPTION	:=	Client Twitch pour New 3DS : streams, chat, recherche
+APP_DESCRIPTION	:=	Twitch client for New 3DS: streams, chat, search
 APP_AUTHOR		:=	twitch-3ds
 ICON			:=	icon.png
 

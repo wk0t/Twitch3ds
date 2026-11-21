@@ -1,11 +1,11 @@
-// ui.c : petites primitives de dessin (citro2d + police système)
-// tout le texte passe par a->textbuf, que main.c vide à chaque frame — donc rien à garder entre 2 frames
+// ui.c: small drawing primitives (citro2d + system font)
+// all text goes through a->textbuf, which main.c clears every frame — so nothing persists between frames
 #include <stdio.h>
 #include <string.h>
 
 #include "ui.h"
 
-/* le "…" en UTF-8, NUL compris */
+/* the "…" in UTF-8, NUL included */
 static const char UI_ELLIPSIS[] = "\xE2\x80\xA6";
 
 #define UI_WRAP_MAX_LINES 16
@@ -23,7 +23,7 @@ void ui_exit(void)
     s_app = NULL;
 }
 
-/* parse dans le textbuf de la frame, false si vide/imparsable */
+/* parses into the frame's textbuf, false if empty/unparseable */
 static bool ui_parse(App *a, C2D_Text *t, const char *utf8)
 {
     if (!a || !a->textbuf || !utf8 || !utf8[0])
@@ -67,11 +67,11 @@ float ui_text_ellipsis(App *a, float x, float y, float scale, u32 color,
     int len = (int)strlen(utf8);
     if (len > (int)sizeof(tmp) - (int)sizeof(UI_ELLIPSIS))
         len = (int)sizeof(tmp) - (int)sizeof(UI_ELLIPSIS);
-    /* recule jusqu'à une frontière UTF-8 propre */
+    /* step back to a clean UTF-8 boundary */
     while (len > 0 && ((u8)utf8[len] & 0xC0) == 0x80)
         len--;
 
-    /* dichotomie sur la longueur du préfixe */
+    /* binary search on the prefix length */
     int lo = 0, hi = len, best = 0;
     while (lo <= hi) {
         int mid = (lo + hi) / 2;
@@ -93,7 +93,7 @@ float ui_text_ellipsis(App *a, float x, float y, float scale, u32 color,
     return ui_text(a, x, y, scale, color, tmp);
 }
 
-/* dessine une ligne, renvoie sa hauteur */
+/* draws a line, returns its height */
 static float ui_draw_line(App *a, float x, float y, float scale, u32 color, const char *s)
 {
     C2D_Text t;
@@ -106,7 +106,7 @@ static float ui_draw_line(App *a, float x, float y, float scale, u32 color, cons
     return h;
 }
 
-/* plus long préfixe de s qui tient dans max_w (jamais moins d'un glyphe) */
+/* longest prefix of s that fits in max_w (never less than one glyph) */
 static size_t ui_fit_prefix(App *a, float scale, const char *s, size_t n, float max_w)
 {
     char tmp[UI_LINE_CAP];
@@ -122,13 +122,13 @@ static size_t ui_fit_prefix(App *a, float scale, const char *s, size_t n, float 
         else
             break;
     }
-    return best ? best : i; /* force la progression même si un seul glyphe déborde */
+    return best ? best : i; /* force progress even if a single glyph overflows */
 }
 
 float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
                    const char *utf8, float max_w, int max_lines)
 {
-    /* l'UI est mono-thread, donc buffer statique ok */
+    /* the UI is single-threaded, so a static buffer is ok */
     static char L[UI_WRAP_MAX_LINES][UI_LINE_CAP];
 
     if (!a || !utf8 || !utf8[0] || max_lines < 1 || max_w <= 0.0f)
@@ -142,13 +142,13 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
     size_t cl = 0;
     const char *p = utf8;
 
-    /* découpe gloutonne mot à mot */
+    /* greedy word-by-word split */
     while (*p && !truncated) {
         if (*p == ' ' || *p == '\t' || *p == '\r') {
             p++;
             continue;
         }
-        if (*p == '\n') { /* saut de ligne explicite */
+        if (*p == '\n') { /* explicit line break */
             p++;
             if (n >= cap) {
                 truncated = true;
@@ -164,7 +164,7 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
         while (*p && *p != ' ' && *p != '\t' && *p != '\r' && *p != '\n')
             p++;
         size_t wl = (size_t)(p - ws);
-        if (wl > UI_LINE_CAP - 8) { /* mot à rallonge : on le coupe (frontière UTF-8) */
+        if (wl > UI_LINE_CAP - 8) { /* overlong word: we cut it (UTF-8 boundary) */
             size_t k = UI_LINE_CAP - 8;
             while (k > 0 && ((u8)ws[k] & 0xC0) == 0x80)
                 k--;
@@ -176,7 +176,7 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
         word[wl] = '\0';
 
         if (cl > 0) {
-            /* on tente d'ajouter " mot" à la ligne courante */
+            /* try to append " word" to the current line */
             char cand[UI_LINE_CAP];
             if (cl + 1 + wl < sizeof(cand)) {
                 memcpy(cand, cur, cl);
@@ -188,7 +188,7 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
                     continue;
                 }
             }
-            /* ça déborde : on ferme la ligne et on repart avec le mot */
+            /* it overflows: close the line and restart with the word */
             if (n >= cap) {
                 truncated = true;
                 break;
@@ -198,7 +198,7 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
             cl = 0;
         }
 
-        /* mot seul trop large : on le tranche caractère par caractère */
+        /* lone word too wide: slice it character by character */
         while (ui_text_width(a, scale, word) > max_w) {
             size_t rem = strlen(word);
             size_t fit = ui_fit_prefix(a, scale, word, rem, max_w);
@@ -230,7 +230,7 @@ float ui_text_wrap(App *a, float x, float y, float scale, u32 color,
     if (n == 0)
         return 0.0f;
 
-    float line_h = 30.0f * scale; /* réajusté avec la vraie hauteur de la 1re ligne */
+    float line_h = 30.0f * scale; /* adjusted with the real height of the 1st line */
     for (int i = 0; i < n; i++) {
         float ly = y + (float)i * line_h;
         if (i == n - 1 && truncated) {
@@ -261,7 +261,7 @@ bool ui_button(App *a, float x, float y, float w, float h,
 
     ui_panel(x, y, w, h, hit ? COL_PURPLE : COL_PANEL2);
 
-    /* liseré 1 px autour */
+    /* 1 px border around */
     C2D_DrawRectSolid(x,            y,            0.0f, w,    1.0f, COL_PURPLE_DARK);
     C2D_DrawRectSolid(x,            y + h - 1.0f, 0.0f, w,    1.0f, COL_PURPLE_DARK);
     C2D_DrawRectSolid(x,            y,            0.0f, 1.0f, h,    COL_PURPLE_DARK);
@@ -321,7 +321,7 @@ void ui_draw_status(App *a)
     if (osGetTime() >= a->status_until)
         return;
 
-    /* bandeau tout en bas de l'écran du bas (320 px) */
+    /* band at the very bottom of the bottom screen (320 px) */
     ui_panel(0.0f, 225.0f, 320.0f, 15.0f, COL_PANEL);
 
     C2D_Text t;
@@ -352,7 +352,7 @@ u32 ui_color_from_hex(const char *hex)
 
     int v[6];
     for (int i = 0; i < 6; i++) {
-        v[i] = ui_hexval(hex[1 + i]); /* si on tombe sur le NUL ça rend -1, pas de débordement */
+        v[i] = ui_hexval(hex[1 + i]); /* if we hit the NUL it returns -1, no overflow */
         if (v[i] < 0)
             return COL_PURPLE;
     }
@@ -363,7 +363,7 @@ u32 ui_color_from_hex(const char *hex)
     int g = v[2] * 16 + v[3];
     int b = v[4] * 16 + v[5];
 
-    /* trop sombre sur fond noir : on éclaircit en mélangeant du blanc */
+    /* too dark on a black background: we lighten it by mixing in white */
     if (r + g + b < 120) {
         r = (r + 255) / 2;
         g = (g + 255) / 2;

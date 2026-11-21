@@ -1,4 +1,4 @@
-// scene_search.c : clavier puis liste de résultats (réutilise la liste de scene_home)
+// scene_search.c: keyboard then results list (reuses the scene_home list)
 #include <stdio.h>
 #include <string.h>
 #include <3ds.h>
@@ -10,7 +10,7 @@
 #include "thumb.h"
 #include "config.h"
 
-// ces browse_* vivent dans scene_home.c
+// these browse_* live in scene_home.c
 extern void browse_update(App *a, u32 kDown, u32 kHeld,
                           const touchPosition *touch,
                           void (*reload)(App *a));
@@ -20,9 +20,9 @@ extern void browse_release_thumbs(App *a);
 extern void browse_mark_foreign_list(void);
 extern HttpCtx *browse_http(App *a);
 
-static char s_query[64]; // dernière requête tapée, re-servie par X
+static char s_query[64]; // last typed query, re-used by X
 
-// bloquant (~1s), l'écran reste figé pendant l'appel
+// blocking (~1s), the screen stays frozen during the call
 static void search_reload(App *a)
 {
     HttpCtx *http = browse_http(a);
@@ -30,11 +30,11 @@ static void search_reload(App *a)
     a->stream_count = 0;
     a->sel = 0;
     a->scroll = 0;
-    snprintf(a->list_title, sizeof(a->list_title), "Recherche : %.48s",
+    snprintf(a->list_title, sizeof(a->list_title), "Search: %.48s",
              s_query);
-    browse_mark_foreign_list(); // scene_home rechargera son top au retour
+    browse_mark_foreign_list(); // scene_home reloads its top on return
     if (!http) {
-        app_set_status(a, "Erreur reseau (init HTTP)");
+        app_set_status(a, "Network error (HTTP init)");
         return;
     }
     int n = twitch_search_streams(http, s_query, a->streams,
@@ -43,9 +43,9 @@ static void search_reload(App *a)
         const char *g = twitch_last_error();
         const char *e = g[0] ? g : http_ctx_last_error(http);
         if (e[0])
-            app_set_status(a, "Erreur (%d): %s", n, e);
+            app_set_status(a, "Error (%d): %s", n, e);
         else
-            app_set_status(a, "Erreur reseau (%d)", n);
+            app_set_status(a, "Network error (%d)", n);
         return;
     }
     a->stream_count = n;
@@ -55,7 +55,7 @@ static void search_reload(App *a)
 static void search_prompt(App *a)
 {
     char q[64];
-    if (!app_keyboard("Rechercher une chaine ou un jeu", q, sizeof(q))) {
+    if (!app_keyboard("Search a channel or a game", q, sizeof(q))) {
         app_switch_scene(a, SCENE_HOME);
         return;
     }
@@ -63,7 +63,7 @@ static void search_prompt(App *a)
     search_reload(a);
 }
 
-// X : relance la même requête, sinon ouvre le clavier
+// X: rerun the same query, else open the keyboard
 static void search_refresh(App *a)
 {
     if (s_query[0])
@@ -84,7 +84,7 @@ static void search_update(App *a, u32 kDown, u32 kHeld,
         app_switch_scene(a, SCENE_HOME);
         return;
     }
-    if (kDown & KEY_Y) { // on chope Y ici, avant que browse_update le voie
+    if (kDown & KEY_Y) { // we grab Y here, before browse_update sees it
         search_prompt(a);
         return;
     }

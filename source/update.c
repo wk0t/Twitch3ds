@@ -1,4 +1,4 @@
-// update.c : regarde la dernière release GitHub et dit s'il y a mieux à jour.
+// update.c: looks at the latest GitHub release and tells if there is something newer.
 #include <3ds.h>
 #include <stdio.h>
 #include <string.h>
@@ -14,9 +14,9 @@
 static volatile bool s_started;
 static volatile bool s_available;
 static char s_latest[32];
-static char s_asset[512];   // url du .3dsx de la release
+static char s_asset[512];   // url of the release .3dsx
 
-// "v1.2.3" -> 1002003, pour comparer deux versions
+// "v1.2.3" -> 1002003, to compare two versions
 static long ver_num(const char *v)
 {
     while (*v == 'v' || *v == 'V') v++;
@@ -43,7 +43,7 @@ static void check_thread(void *arg)
                 if (ver_num(tag->valuestring) > ver_num(APP_VERSION))
                     s_available = true;
             }
-            // on récupère l'url du .3dsx attaché à la release
+            // fetch the url of the .3dsx attached to the release
             cJSON *assets = cJSON_GetObjectItemCaseSensitive(root, "assets");
             cJSON *a;
             cJSON_ArrayForEach(a, assets) {
@@ -68,7 +68,7 @@ void update_start_check(void)
     if (s_started)
         return;
     s_started = true;
-    // détaché : on ne le rejoint jamais, il se libère tout seul
+    // detached: we never join it, it frees itself
     threadCreate(check_thread, NULL, 32 * 1024, 0x30, -2, true);
 }
 
@@ -89,7 +89,7 @@ int update_download(void)
 
     int rc = -1;
     if (code == 200 && buf.data && buf.len > 1000) {
-        // on écrit à côté puis on renomme, pour ne pas casser le .3dsx si ça foire
+        // write alongside then rename, so a failure does not corrupt the .3dsx
         FILE *f = fopen("sdmc:/3ds/twitch3ds.new", "wb");
         if (f) {
             size_t w = fwrite(buf.data, 1, buf.len, f);

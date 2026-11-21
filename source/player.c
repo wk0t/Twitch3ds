@@ -1,5 +1,5 @@
-// player.c : lecture d'un live (fetch + demux TS + sync audio/video)
-// deux threads : le fetch télécharge/démuxe, le principal décode la vidéo calée sur l'horloge audio.
+// player.c: live playback (fetch + TS demux + audio/video sync)
+// two threads: fetch downloads/demuxes, the main one decodes video locked on the audio clock.
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -14,23 +14,23 @@
 #include "audio_aac.h"
 #include "video_mvd.h"
 
-// constantes de synchro (en 90 kHz sauf mention)
-#define PTS_LEAD          2700      /* 30 ms : marge de présentation      */
-#define PTS_LATE          45000     /* 500 ms : seuil de drop             */
-#define PTS_DISCONT       900000    /* 10 s : recul de PTS = discontinuité */
-#define PTS_PREFETCH_CAP  540000    /* 6 s : avance max du fetch          */
+// sync constants (in 90 kHz unless noted)
+#define PTS_LEAD          2700      /* 30 ms: presentation margin         */
+#define PTS_LATE          45000     /* 500 ms: drop threshold             */
+#define PTS_DISCONT       900000    /* 10 s: PTS going backwards = discontinuity */
+#define PTS_PREFETCH_CAP  540000    /* 6 s: max fetch lead                 */
 #define AUDIO_PREFETCH_MS 6000
 #define BUFFER_START_MS   1200
 #define BUFFER_START_AUS  60
-#define BUFFER_MAX_WAIT_MS 3000     /* au-delà on démarre même sans horloge audio
-                                     * (flux sans piste audio, DSP absent...) */
+#define BUFFER_MAX_WAIT_MS 3000     /* beyond that we start even without an audio clock
+                                     * (stream without audio track, no DSP...) */
 #define STARVE_MS         2000
 #define MAX_DECODE_PER_UPDATE 2
-#define MAX_POPS_PER_UPDATE   32    /* borne le travail de drop par frame */
+#define MAX_POPS_PER_UPDATE   32    /* bounds the drop work per frame */
 #define FETCH_MAX_FAILS   5
-#define ENDED_DRAIN_MS    60000     /* garde-fou : drain borné après ENDLIST */
+#define ENDED_DRAIN_MS    60000     /* guard: bounded drain after ENDLIST */
 
-// file circulaire des AU vidéo
+// circular queue of video AUs
 typedef struct {
     size_t len;
     s64    pts;
@@ -44,21 +44,21 @@ static VideoAU  *s_vq[VQ_MAX];
 static int       s_vq_head;
 static int       s_vq_count;
 static LightLock s_vq_lock;
-static u32       s_drop_full;   /* AUs jetées faute de place */
-static u32       s_drop_late;   /* AUs jetées car en retard  */
+static u32       s_drop_full;   /* AUs dropped for lack of room */
+static u32       s_drop_late;   /* AUs dropped because late     */
 
-// état global du player
+// global player state
 static struct {
-    LightLock lock;                 /* protège paramètres / message d'erreur */
+    LightLock lock;                 /* guards settings / error message */
     volatile PlayerState state;
     volatile bool quit;
-    volatile bool audio_only;       /* mode effectif (peut basculer si MVD KO) */
+    volatile bool audio_only;       /* effective mode (may switch if MVD fails) */
 
-    bool  opened;                   /* thread fetch en cours (à joindre)  */
+    bool  opened;                   /* fetch thread running (to join)   */
     bool  locks_inited;
     Thread fetch;
-    HttpCtx *fetch_ctx;             /* créé/libéré par open/close (thread principal),
-                                     * annulable pendant un transfert */
+    HttpCtx *fetch_ctx;             /* created/freed by open/close (main thread),
+                                     * cancellable during a transfer */
 
     char login[64];
     char pref[24];
@@ -68,29 +68,29 @@ static struct {
     int  q_width, q_height;
     char err[128];
 
-    /* posés par le thread fetch, lus par close() après join */
+    /* set by the fetch thread, read by close() after join */
     bool demux_inited;
     bool audio_started;
 
-    /* côté thread principal uniquement */
+    /* main thread only */
     bool video_inited;
     u32  frames_decoded;
     bool drop_until_key;
-    u64  starve_since;              /* osGetTime(), 0 = pas en famine */
-    u64  buffering_since;           /* osGetTime() d'entrée en BUFFERING, 0 sinon */
+    u64  starve_since;              /* osGetTime(), 0 = not starving */
+    u64  buffering_since;           /* osGetTime() when entering BUFFERING, 0 otherwise */
 
-    /* horloge de secours si audio_clock_pts() reste à -1 (stream sans audio) */
+    /* fallback clock if audio_clock_pts() stays at -1 (stream without audio) */
     bool fb_valid;
     s64  fb_base_pts;
     u64  fb_base_ms;
 } P;
 
-/* buffers volumineux hors pile (un seul thread fetch à la fois) */
+/* big buffers off the stack (only one fetch thread at a time) */
 static TwitchQuality s_quals[TW_MAX_QUALITIES];
 static HlsPlaylist   s_pl;
 static char          s_media_url[2048];
 
-// ---- utilitaires ----
+// ---- utilities ----
 
 static void ensure_locks(void)
 {
@@ -101,7 +101,7 @@ static void ensure_locks(void)
     }
 }
 
-// pose le message d'erreur avant de basculer en PLAYER_ERROR
+// sets the error message before switching to PLAYER_ERROR
 static void set_error(const char *fmt, ...)
 {
     va_list ap;
@@ -113,7 +113,7 @@ static void set_error(const char *fmt, ...)
     P.state = PLAYER_ERROR;
 }
 
-// sommeil par tranches de 100 ms en surveillant quit ; renvoie true si on doit quitter
+// sleeps in 100 ms slices while watching quit; returns true if we must exit
 static bool sleep_check_quit(int total_ms)
 {
     while (total_ms > 0 && !P.quit) {
@@ -144,7 +144,7 @@ static void vq_clear(void)
     LightLock_Unlock(&s_vq_lock);
 }
 
-// PTS min/max de la file, false si vide
+// min/max PTS of the queue, false if empty
 static bool vq_pts_range(s64 *oldest, s64 *newest)
 {
     bool ok = false;
@@ -158,7 +158,7 @@ static bool vq_pts_range(s64 *oldest, s64 *newest)
     return ok;
 }
 
-// ---- callbacks démux (thread fetch) ----
+// ---- demux callbacks (fetch thread) ----
 
 static void on_video_au(const u8 *au, size_t len, s64 pts90k, void *user)
 {
@@ -166,7 +166,7 @@ static void on_video_au(const u8 *au, size_t len, s64 pts90k, void *user)
     if (P.audio_only || len == 0)
         return;
 
-    /* scan des start codes Annex-B pour repérer IDR (5) et SPS (7) */
+    /* scans Annex-B start codes to spot IDR (5) and SPS (7) */
     bool kf = false, sps = false;
     for (size_t i = 0; i + 3 < len; i++) {
         if (au[i] == 0 && au[i + 1] == 0 && au[i + 2] == 1) {
@@ -179,7 +179,7 @@ static void on_video_au(const u8 *au, size_t len, s64 pts90k, void *user)
 
     VideoAU *e = malloc(sizeof(VideoAU) + len);
     if (!e)
-        return; /* plus de mémoire : on saute l'AU */
+        return; /* out of memory: skip the AU */
     e->len = len;
     e->pts = pts90k;
     e->keyframe = kf;
@@ -188,7 +188,7 @@ static void on_video_au(const u8 *au, size_t len, s64 pts90k, void *user)
 
     LightLock_Lock(&s_vq_lock);
     if (s_vq_count == VQ_MAX) {
-        /* pleine : on jette la plus ancienne */
+        /* full: drop the oldest */
         free(s_vq[s_vq_head]);
         s_vq_head = (s_vq_head + 1) % VQ_MAX;
         s_vq_count--;
@@ -202,13 +202,13 @@ static void on_video_au(const u8 *au, size_t len, s64 pts90k, void *user)
 static void on_audio_pes(const u8 *adts, size_t len, s64 pts90k, void *user)
 {
     (void)user;
-    /* le décodage AAC se fait ici, dans le thread fetch : c'est voulu */
+    /* AAC decoding happens here, in the fetch thread: on purpose */
     audio_feed(adts, len, pts90k);
 }
 
-// ---- thread fetch ----
+// ---- fetch thread ----
 
-// choisit une qualité dans s_quals[0..n-1], -1 si rien
+// picks a quality in s_quals[0..n-1], -1 if none
 static int pick_quality(int n)
 {
     bool want_audio = (strcmp(P.pref, "audio_only") == 0) || !P.allow_video;
@@ -217,8 +217,8 @@ static int pick_quality(int n)
         for (int i = 0; i < n; i++)
             if (s_quals[i].audio_only)
                 return i;
-        /* pas de rendition audio_only : plus petite bande passante,
-         * la vidéo sera simplement ignorée */
+        /* no audio_only rendition: smallest bandwidth,
+         * the video will simply be ignored */
     } else {
         size_t plen = strlen(P.pref);
         if (plen > 0) {
@@ -229,7 +229,7 @@ static int pick_quality(int n)
         }
     }
 
-    /* à défaut : plus petite bande passante vidéo */
+    /* default: smallest video bandwidth */
     int best = -1;
     for (int i = 0; i < n; i++) {
         if (s_quals[i].audio_only)
@@ -238,11 +238,11 @@ static int pick_quality(int n)
             best = i;
     }
     if (best < 0 && n > 0)
-        best = 0; /* uniquement de l'audio_only disponible */
+        best = 0; /* only audio_only available */
     return best;
 }
 
-/* cap mémoire : pas plus de ~6 s d'avance (PTS vidéo ou buffer audio) */
+/* memory cap: no more than ~6 s of lead (video PTS or audio buffer) */
 static void wait_prefetch_cap(void)
 {
     while (!P.quit) {
@@ -267,11 +267,11 @@ static void fetch_thread_main(void *arg)
 {
     (void)arg;
 
-    /* le contexte HTTP appartient à open/close (thread principal), qui peut
-     * l'annuler en plein transfert */
+    /* the HTTP ctx belongs to open/close (main thread), which can
+     * cancel it mid-transfer */
     HttpCtx *ctx = P.fetch_ctx;
     if (!ctx) {
-        set_error("Erreur reseau (contexte HTTP)");
+        set_error("Network error (HTTP ctx)");
         return;
     }
 
@@ -279,18 +279,18 @@ static void fetch_thread_main(void *arg)
 
     int n = twitch_get_qualities(ctx, P.login, s_quals, TW_MAX_QUALITIES);
     if (n == 0) {
-        /* chaine hors-ligne */
+        /* channel offline */
         P.state = PLAYER_ENDED;
         goto cleanup;
     }
     if (n < 0) {
-        set_error("Impossible de recuperer le stream (%d)", n);
+        set_error("Cannot get the stream (%d)", n);
         goto cleanup;
     }
 
     int qi = pick_quality(n);
     if (qi < 0) {
-        set_error("Aucune qualite lisible");
+        set_error("No playable quality");
         goto cleanup;
     }
 
@@ -326,9 +326,9 @@ static void fetch_thread_main(void *arg)
             hls_parse_media_playlist((const char *)plbuf.data, &s_pl) < 0) {
             if (++fails >= FETCH_MAX_FAILS) {
                 if (code == 404)
-                    P.state = PLAYER_ENDED; /* stream coupé côté CDN */
+                    P.state = PLAYER_ENDED; /* stream cut by the CDN */
                 else
-                    set_error("Playlist inaccessible (%d)", code);
+                    set_error("Playlist unreachable (%d)", code);
                 goto cleanup;
             }
             if (sleep_check_quit(1000))
@@ -336,7 +336,7 @@ static void fetch_thread_main(void *arg)
             continue;
         }
 
-        /* on se cale au bord du live : 3 derniers segments */
+        /* lock onto the live edge: last 3 segments */
         int start = 0;
         if (!have_seq) {
             start = s_pl.count > 3 ? s_pl.count - 3 : 0;
@@ -354,11 +354,11 @@ static void fetch_thread_main(void *arg)
             code = http_get(ctx, s_pl.segs[i].url, &segbuf);
             if (code < 200 || code >= 300) {
                 if (++fails >= FETCH_MAX_FAILS) {
-                    set_error("Segment inaccessible (%d)", code);
+                    set_error("Segment unreachable (%d)", code);
                     goto cleanup;
                 }
                 seg_fail = true;
-                break; /* re-essayé au prochain rafraîchissement */
+                break; /* retried on the next refresh */
             }
             fails = 0;
             if (segbuf.len > 0) {
@@ -372,7 +372,7 @@ static void fetch_thread_main(void *arg)
             fails = 0;
 
         if (s_pl.ended && !seg_fail) {
-            /* ENDLIST : on passe ENDED une fois les files vidées (drain borné) */
+            /* ENDLIST: switch to ENDED once the queues are drained (bounded drain) */
             int waited = 0;
             while (!P.quit && waited < ENDED_DRAIN_MS &&
                    (vq_count() > 0 || audio_buffered_ms() > 0)) {
@@ -397,15 +397,15 @@ static void fetch_thread_main(void *arg)
 cleanup:
     http_buf_free(&plbuf);
     http_buf_free(&segbuf);
-    /* ctx appartient à close : on ne le libère pas ici */
+    /* ctx belongs to close: we do not free it here */
 }
 
-// ---- API publique (thread principal) ----
+// ---- public API (main thread) ----
 
 Result player_open(const char *login, const char *quality_pref, bool allow_video)
 {
     ensure_locks();
-    player_close(); /* au cas où une lecture tourne encore */
+    player_close(); /* in case a playback is still running */
 
     P.quit = false;
     P.demux_inited = false;
@@ -430,17 +430,17 @@ Result player_open(const char *login, const char *quality_pref, bool allow_video
 
     P.state = PLAYER_CONNECTING;
 
-    /* contexte HTTP tenu par le thread principal, annulable par close */
+    /* HTTP ctx held by the main thread, cancellable by close */
     P.fetch_ctx = http_ctx_new();
     if (!P.fetch_ctx) {
-        set_error("Erreur reseau (contexte HTTP)");
+        set_error("Network error (HTTP ctx)");
         return MAKERESULT(RL_PERMANENT, RS_OUTOFRESOURCE, RM_APPLICATION,
                           RD_OUT_OF_MEMORY);
     }
 
-    /* 128 Ko : curl + TLS + démux TS + AAC soft, c'est le thread le plus lourd.
-     * On vise le cœur 2 du New 3DS (pleine puissance), sinon le cœur 1 (syscore),
-     * et à défaut le cœur applicatif 0. */
+    /* 128 KiB: curl + TLS + TS demux + soft AAC, this is the heaviest thread.
+     * Target core 2 of the New 3DS (full power), else core 1 (syscore),
+     * else the application core 0. */
     P.fetch = threadCreate(fetch_thread_main, NULL, 128 * 1024, 0x2A, 2, false);
     if (!P.fetch)
         P.fetch = threadCreate(fetch_thread_main, NULL, 128 * 1024, 0x2A, 1, false);
@@ -449,7 +449,7 @@ Result player_open(const char *login, const char *quality_pref, bool allow_video
     if (!P.fetch) {
         http_ctx_free(P.fetch_ctx);
         P.fetch_ctx = NULL;
-        set_error("Creation du thread reseau impossible");
+        set_error("Cannot create the network thread");
         return MAKERESULT(RL_PERMANENT, RS_OUTOFRESOURCE, RM_APPLICATION,
                           RD_OUT_OF_MEMORY);
     }
@@ -466,10 +466,10 @@ void player_close(void)
     }
 
     P.quit = true;
-    /* on annule le transfert curl en cours. Sinon le thread reste bloqué jusqu'au
-     * timeout (10-15 s) et threadFree libère sa pile pendant qu'il tourne encore
-     * dessus -> use-after-free. Le callback de progression coupe en ~1 s, donc on
-     * peut joindre sans borne. */
+    /* we cancel the ongoing curl transfer. Else the thread stays blocked until the
+     * timeout (10-15 s) and threadFree frees its stack while it is still running
+     * on it -> use-after-free. The progress callback aborts in ~1 s, so we can
+     * join without a bound. */
     if (P.fetch_ctx)
         http_ctx_cancel(P.fetch_ctx);
     if (P.fetch) {
@@ -508,7 +508,7 @@ const char *player_error_msg(void)
     return P.err;
 }
 
-/* horloge de lecture : l'audio est maître, repli sur osGetTime si pas d'audio */
+/* playback clock: audio is the master, fallback to osGetTime if no audio */
 static s64 playback_clock(s64 front_pts)
 {
     s64 clock = audio_clock_pts();
@@ -527,9 +527,9 @@ static s64 playback_clock(s64 front_pts)
 void player_update(void)
 {
     ensure_locks();
-    /* on recharge l'anneau audio à chaque frame, indépendamment du fetch : sinon
-     * le son coupe dès que le fetch se met en pause au plafond de préchargement,
-     * et l'horloge (donc la vidéo) se fige avec lui */
+    /* we refill the audio ring every frame, independently of fetch: else the sound
+     * cuts as soon as fetch pauses at the prefetch cap, and the clock
+     * (hence the video) freezes with it */
     audio_update();
 
     PlayerState st = P.state;
@@ -540,11 +540,11 @@ void player_update(void)
             P.buffering_since = osGetTime();
 
         bool video_ready = vq_count() > BUFFER_START_AUS;
-        /* l'audio pilote l'horloge : on démarre dès qu'il a assez tamponné.
-         * Sinon on démarre quand la vidéo est prête et que l'audio ne viendra pas
-         * driver la lecture : tout de suite s'il n'y a pas de DSP, ou après un
-         * délai de grâce (flux sans piste audio). Sans ce repli on resterait
-         * coincé en buffering. */
+        /* audio drives the clock: we start as soon as it has buffered enough.
+         * Else we start when the video is ready and audio will not drive
+         * playback: immediately if there is no DSP, or after a grace delay
+         * (stream without audio track). Without this fallback we would stay
+         * stuck in buffering. */
         bool audio_wont_drive =
             !audio_available() ||
             (osGetTime() - P.buffering_since) > BUFFER_MAX_WAIT_MS;
@@ -562,7 +562,7 @@ void player_update(void)
 
     int decoded = 0, pops = 0;
     while (decoded < MAX_DECODE_PER_UPDATE && pops < MAX_POPS_PER_UPDATE) {
-        /* on ne pop que si l'AU de tête est due */
+        /* we only pop if the head AU is due */
         VideoAU *au = NULL;
         s64 clock = 0;
         LightLock_Lock(&s_vq_lock);
@@ -580,12 +580,12 @@ void player_update(void)
             break;
         pops++;
 
-        if (P.audio_only) { /* MVD indisponible : on purge */
+        if (P.audio_only) { /* no MVD: purge */
             free(au);
             continue;
         }
 
-        /* PTS qui recule de >10 s : c'est une discontinuité, on laisse passer */
+        /* PTS going back by >10 s: it is a discontinuity, let it through */
         bool discont = au->pts < clock - PTS_DISCONT;
         bool late = !discont && (au->pts < clock - PTS_LATE);
 
@@ -595,18 +595,18 @@ void player_update(void)
             continue;
         }
         if (late && !au->keyframe) {
-            /* en retard : on jette jusqu'à la prochaine keyframe */
+            /* late: drop until the next keyframe */
             P.drop_until_key = true;
             s_drop_late++;
             free(au);
             continue;
         }
-        /* drop_until_key n'est levé qu'APRÈS un décodage réussi de la keyframe
-         * (plus bas) : sinon une keyframe dont le décodage MVD échoue laisserait
-         * passer des images P sans référence valide */
+        /* drop_until_key is only cleared AFTER a successful keyframe decode
+         * (below): else a keyframe whose MVD decode fails would let P frames
+         * through without a valid reference */
 
         if (!P.video_inited) {
-            /* on init MVD au premier AU qui porte un SPS */
+            /* init MVD on the first AU carrying an SPS */
             if (!au->has_sps) {
                 free(au);
                 continue;
@@ -614,7 +614,7 @@ void player_update(void)
             int w = P.q_width  > 0 ? P.q_width  : 640;
             int h = P.q_height > 0 ? P.q_height : 360;
             if (R_FAILED(video_init(w, h))) {
-                /* MVD KO : on continue en audio seul */
+                /* MVD failed: continue audio-only */
                 P.audio_only = true;
                 free(au);
                 vq_clear();
@@ -626,8 +626,8 @@ void player_update(void)
         int r = video_decode_au(au->data, au->len);
         if (r == 1) {
             P.frames_decoded++;
-            /* keyframe décodée : la référence IDR est en place, on peut
-             * réaccepter les images P */
+            /* keyframe decoded: the IDR reference is in place, we can
+             * accept P frames again */
             if (au->keyframe)
                 P.drop_until_key = false;
         }
@@ -635,14 +635,14 @@ void player_update(void)
         decoded++;
     }
 
-    /* famine prolongée -> re-buffering */
+    /* prolonged starvation -> re-buffering */
     if (vq_count() == 0 && audio_buffered_ms() <= 0) {
         u64 now = osGetTime();
         if (P.starve_since == 0) {
             P.starve_since = now;
         } else if (now - P.starve_since > STARVE_MS) {
             P.starve_since = 0;
-            P.buffering_since = 0;   /* réarme le délai de grâce audio */
+            P.buffering_since = 0;   /* rearm the audio grace delay */
             P.fb_valid = false;
             P.state = PLAYER_BUFFERING;
         }

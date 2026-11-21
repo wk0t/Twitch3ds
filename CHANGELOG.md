@@ -2,28 +2,27 @@
 
 ## 1.0
 
-Première version qui tourne sur New 3DS / New 2DS : navigation, recherche,
-lecture vidéo H.264 (MVD), audio AAC, chat (lecture + envoi), connexion au
-compte.
+First version that runs on New 3DS / New 2DS: browsing, search,
+H.264 video playback (MVD), AAC audio, chat (read + send), account login.
 
-### Notes de dev / pièges rencontrés
+### Dev notes / pitfalls encountered
 
-- **Listes GQL** : `streams(first:)` et `searchStreams(first:)` plafonnent à 30
-  côté Twitch (au-delà : erreur `argument 'first'...`). D'où la limite à 30.
-- **Vidéo (MVD)** : `mvdstdRenderVideoFrame` renvoie INVALIDARG si les dimensions
-  de sortie ne sont pas alignées sur 16 et égales à l'entrée. Solution : aligner
-  la sortie sur 16, laisser MVD écrire dans un buffer compact, puis recopier vers
-  un buffer strié en puissance de 2 pour la texture citro2d.
-- **Audio** : l'anneau ndsp (~0,7 s) doit être rechargé en continu, pas seulement
-  quand le thread réseau tourne — sinon le son coupe au bout d'~1 s dès que le
-  téléchargement se met en pause. D'où `audio_update()` appelé chaque frame.
-- **Login** : le pseudo se récupère via `id.twitch.tv/oauth2/validate` (marche
-  avec n'importe quel jeton), pas via Helix (qui exige un client-id enregistré).
-- **Chat (IRC)** : un `connect` non bloquant + `select()` ne détecte pas la fin
-  de connexion sur le SOC du 3DS. Repassé en `connect` bloquant.
+- **GQL lists**: `streams(first:)` and `searchStreams(first:)` cap at 30
+  on Twitch's side (beyond that: `argument 'first'...` error). Hence the cap at 30.
+- **Video (MVD)**: `mvdstdRenderVideoFrame` returns INVALIDARG if the output dims
+  are not 16-aligned and equal to the input. Fix: 16-align the output, let MVD
+  write into a compact buffer, then copy to a pow2-strided buffer for the
+  citro2d texture.
+- **Audio**: the ndsp ring (~0.7 s) must be refilled continuously, not only
+  while the network thread runs — else the sound cuts after ~1 s as soon as the
+  download pauses. Hence `audio_update()` called every frame.
+- **Login**: the username is fetched via `id.twitch.tv/oauth2/validate` (works
+  with any token), not via Helix (which requires a registered client-id).
+- **Chat (IRC)**: a non-blocking `connect` + `select()` does not detect connection
+  completion on the 3DS SOC. Switched to a blocking `connect`.
 
-### Limites connues
+### Known limitations
 
-- Émotes affichées en texte, pas d'images.
-- Live seulement (pas de VOD / clips).
-- Old 3DS / 2DS classique : audio seul (pas de MVD).
+- Chat emotes are shown as text, not images.
+- Live only (no VODs / clips).
+- Old 3DS / 2DS: audio only (no MVD).
